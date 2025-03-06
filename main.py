@@ -1,16 +1,27 @@
 import tkinter as tk
 import os
 import sqlite3
+import threading
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 from dateutil.parser import parse
 import re
+from tkinter import font
 import pandas as pd
+from threading import Thread
 
 class DatabaseHandler:
     def __init__(self, db_name='registers.db'):
-        self.conn = sqlite3.connect(db_name)
+        self.conn = sqlite3.connect(db_name, check_same_thread=False)
         self.create_tables()
+    
+    def get_all_records(self, file_type):
+        table = self.get_table_name(file_type)
+        with self.conn:
+            cursor = self.conn.cursor()
+            cursor.execute(f'SELECT * FROM {table}')
+            columns = [desc[0] for desc in cursor.description]
+            return columns, cursor.fetchall()
         
     def create_tables(self):
         tables = {
@@ -20,7 +31,7 @@ class DatabaseHandler:
                 '"Дата заключения договора" TEXT',
                 '"Покупатель, ИНН" TEXT',
                 '"Кадастровый номер ЗУ, адрес ЗУ" TEXT',
-                '"Площадь ЗУ, кв. м" REAL',
+                '"Площадь ЗУ, кв.м" REAL', 
                 '"Разрешенное использование ЗУ" TEXT',
                 '"Основание предоставления" TEXT',
                 '"Цена ЗУ по договору, руб." REAL',
@@ -52,13 +63,6 @@ class DatabaseHandler:
             3: 'permits'
         }[file_type]
     
-    def get_all_records(self, file_type):
-        table = self.get_table_name(file_type)
-        with self.conn:
-            cursor = self.conn.cursor()
-            cursor.execute(f'SELECT * FROM {table}')
-            return cursor.fetchall()
-    
     def update_record(self, file_type, record_id, column, value):
         table = self.get_table_name(file_type)
         with self.conn:
@@ -71,29 +75,78 @@ class DatabaseHandler:
     
     def import_from_dataframe(self, file_type, df):
         table = self.get_table_name(file_type)
-        for col in df.columns:
-            if pd.api.types.is_datetime64_any_dtype(df[col]):
-                df[col] = df[col].dt.strftime('%d.%m.%Y')
-        # Экранируем двойные кавычки внутри названий колонок
-        columns = [f'"{col.replace("\"", "\"\"")}"' for col in df.columns.tolist()]
-        placeholders = ', '.join(['?'] * len(columns))
         
+        # Нормализация названий колонок
+        df.columns = [self.normalize_column_name(col) for col in df.columns]
+        
+        # Приведение колонок к правильным названиям
+        column_mapping = {
+            'Контроль по дате (- - просрочка)': 'Контроль по дате ("-" - просрочка)',
+            'Контроль по оплате цены (- переплата; + - недоплата)': 
+                'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
+            'неоплаченные ПЕНИ (+ - недоплата; - переплата)': 
+                'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
+        }
+        df.rename(columns=column_mapping, inplace=True)
+        
+        # Преобразование числовых полей
+        money_columns = ['Цена ЗУ по договору, руб.', 'Оплачено', 
+                        'начисленные ПЕНИ', 'оплачено пеней']
+        for col in money_columns:
+            if col in df.columns:
+                df[col] = (
+                    df[col].astype(str)
+                    .str.replace(r'[^\d,.]', '', regex=True)
+                    .str.replace(',', '.')
+                    .astype(float)
+                )
+        
+        # Обработка дат
+        date_columns = [col for col in df.columns if 'дата' in col.lower()]
+        for col in date_columns:
+            df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce').dt.strftime('%d.%m.%Y')
+        
+        # Добавление недостающих колонок в таблицу
         with self.conn:
             cursor = self.conn.cursor()
-            try:
-                cursor.executemany(
-                    f'''INSERT INTO {table} ({', '.join(columns)})
-                        VALUES ({placeholders})''',
-                    df.values.tolist()
-                )
-            except sqlite3.Error as e:
-                print("SQL error:", e)
-                raise
+            cursor.execute(f"PRAGMA table_info({table})")
+            existing_columns = [col[1] for col in cursor.fetchall()]
+            
+            for col in df.columns:
+                clean_col = col.split('(')[0].strip().replace('"', '')
+                if clean_col not in existing_columns:
+                    try:
+                        cursor.execute(
+                            f'ALTER TABLE {table} ADD COLUMN "{clean_col}" TEXT'
+                        )
+                    except sqlite3.OperationalError:
+                        pass
+        
+        # Вставка данных
+        columns = [f'"{col}"' for col in df.columns]
+        placeholders = ', '.join(['?'] * len(columns))
+        
+        try:
+            cursor.executemany(
+                f'''INSERT INTO {table} ({', '.join(columns)})
+                    VALUES ({placeholders})''',
+                df.where(pd.notnull(df), None).values.tolist()
+            )
+        except sqlite3.Error as e:
+            print("SQL error:", e)
+            raise
     
     def export_to_dataframe(self, file_type):
         table = self.get_table_name(file_type)
         with self.conn:
             return pd.read_sql(f'SELECT * FROM {table}', self.conn)
+    
+    def get_paginated_records(self, file_type, offset, limit):
+        table = self.get_table_name(file_type)
+        with self.conn:
+            cursor = self.conn.cursor()
+            cursor.execute(f'SELECT * FROM {table} LIMIT ? OFFSET ?', (limit, offset))
+            return cursor.fetchall()
 
 class MainApp(tk.Tk):
     def __init__(self):
@@ -135,7 +188,7 @@ class FileWindow(tk.Toplevel):
             'Дата заключения договора', 
             'Покупатель, ИНН', 
             'Кадастровый номер ЗУ, адрес ЗУ',
-            'Площадь ЗУ, кв. м',
+            'Площадь ЗУ, кв.м',
             'Разрешенное использование ЗУ',
             'Основание предоставления',
             'Цена ЗУ по договору, руб.',
@@ -158,6 +211,10 @@ class FileWindow(tk.Toplevel):
     
     def __init__(self, parent, file_type): 
         super().__init__(parent)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self._is_alive = True
+        self.loading_label = None
+        self.column_widths = {}
         self.parent = parent
         self.file_type = file_type
         self.configure_ui()
@@ -166,12 +223,54 @@ class FileWindow(tk.Toplevel):
         self.update_treeview()
         self.setup_tags()
     
+    def process_dataframe(self, df):
+        # Явное преобразование числовых колонок
+        money_columns = ['Цена ЗУ по договору, руб.', 'Оплачено', 
+                        'начисленные ПЕНИ', 'оплачено пеней']
+        for col in money_columns:
+            if col in df.columns:
+                df[col] = (
+                    df[col].astype(str)
+                    .str.replace(r'[^\d,.]', '', regex=True)
+                    .str.replace(',', '.')
+                    .astype(float)
+                )
+        
+        # Преобразование дат
+        date_columns = [col for col in df.columns if 'дата' in col.lower()]
+        for col in date_columns:
+            df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce').dt.strftime('%d.%m.%Y')
+        
+        return df
+
+    def on_close(self):
+        self._is_alive = False
+        self.destroy()
+    
     def configure_ui(self):
         self.title(f"Реестр типа {self.file_type}")
-        self.geometry("1400x800")
+        self.state('zoomed')
         self.style = ttk.Style()
-        self.style.configure("Red.Treeview", background="#ffcccc")
-        self.style.configure("Yellow.Treeview", background="#ffffcc")
+        
+        # Настройка стилей
+        self.style.configure("Treeview",
+                        font=('Arial', 10),
+                        rowheight=40,
+                        background="#ffffff",
+                        fieldbackground="#ffffff",
+                        bordercolor="#d3d3d3",
+                        borderwidth=1,
+                        relief="solid")
+        
+        self.style.configure("Treeview.Heading", 
+                            font=('Arial', 10, 'bold'),
+                            background="#e0e0e0",
+                            relief="raised")
+        
+        # Границы между строками
+        self.style.map("Treeview",
+                  background=[('selected', '#347083')],
+                  foreground=[('selected', 'white')])
 
     def setup_tags(self):
         self.tree.tag_configure('overdue', background='#ffcccc')
@@ -196,9 +295,32 @@ class FileWindow(tk.Toplevel):
         self.tree.bind('<Double-1>', self.on_double_click)
         self.tree["columns"] = self.expected_columns[self.file_type]
         for col in self.expected_columns[self.file_type]:
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=120, anchor='center')
+            self.tree.heading(col, text=col, anchor='w')
+            self.tree.column(col, 
+                            width=200, 
+                            minwidth=100,
+                            stretch=tk.YES,
+                            anchor='w')
+    
+    # Добавляем возможность изменения размера колонок
+        self.tree.bind('<ButtonRelease-1>', self.resize_columns)
 
+    def resize_columns(self, event):
+        for col in self.tree["columns"]:
+            if col not in self.column_widths:
+                f = font.Font()
+                header_width = f.measure(col) + 20
+                max_width = header_width
+                
+                # Ограничиваем количество проверяемых строк для производительности
+                for item in self.tree.get_children()[:100]:  # Проверяем первые 100 строк
+                    value = str(self.tree.set(item, col))
+                    max_width = max(max_width, f.measure(value) + 20)
+                
+                self.column_widths[col] = max_width
+                
+            self.tree.column(col, width=self.column_widths[col])
+            
     def validate_date(self, date_str):
         try:
             parse(date_str, dayfirst=True)
@@ -247,122 +369,124 @@ class FileWindow(tk.Toplevel):
 
     def load_file(self):
         file_path = filedialog.askopenfilename(
-            parent=self,
-            title="Выберите файл",
-            filetypes=[
-                ("Excel files", "*.xlsx"),
-                ("Excel 97-2003 files", "*.xls"),
-                ("All files", "*.*")
-            ]
+            filetypes=[("Excel Files", "*.xlsx *.xls")]
         )
         if not file_path:
             return
         
-        try:
-            # Убрали дублирующийся код загрузки Excel
-            if file_path.endswith('.xls'):
-                df = pd.read_excel(file_path, engine='xlrd')
-            elif file_path.endswith('.xlsx'):
+        def import_task():
+            try:
+                df = pd.read_excel(file_path, engine='openpyxl' if '.xlsx' in file_path else 'xlrd')
+                
+                # Применяем все преобразования из старой версии
+                df = self.process_dataframe(df)
+                
+                self.parent.db.import_from_dataframe(self.file_type, df)
+                self.after(0, self.update_treeview)
+                
+            except Exception as e:
+                self.after(0, lambda e=e: messagebox.showerror("Ошибка", str(e)))
+        
+        Thread(target=import_task, daemon=True).start()
+        
+        def import_data():
+            try:
                 df = pd.read_excel(file_path, engine='openpyxl')
+                
+                # Нормализация названий колонок
+                df.columns = [self.normalize_column_name(col) for col in df.columns]
+                
+                # Обработка данных
+                date_columns = [col for col in df.columns if 'дата' in col.lower()]
+                for col in date_columns:
+                    df[col] = pd.to_datetime(
+                        df[col], 
+                        dayfirst=True, 
+                        errors='coerce'
+                    ).dt.strftime('%d.%m.%Y')
+                
+                # Импорт через новый экземпляр обработчика БД
+                db = DatabaseHandler()
+                db.import_from_dataframe(self.file_type, df)
+                
+                self.after(0, self.update_treeview)
+                
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("Ошибка", str(e)))
+        
+        Thread(target=import_data, daemon=True).start()
 
-            # Преобразование дат из строк в datetime и обратно в строку
-            date_columns = ['Дата заключения договора', 'Срок оплаты по договору', 
-                            'Фактическая дата оплаты', 'Дата выписки учета поступлений, № ПП']
-            for col in date_columns:
-                if col in df.columns:
-                    # Преобразуем в datetime с учетом формата день.месяц.год
-                    df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
-                    # Конвертируем обратно в строку с нужным форматом
-                    df[col] = df[col].dt.strftime('%d.%m.%Y')
-                    
-            # Дальнейшая обработка колонок (остается без изменений)
-            df.columns = (
-                df.columns.str.strip()
-                .str.replace(r'\s+', ' ', regex=True)
-                .str.replace(r'[“”„"]', '', regex=True)
-                .str.replace('("-" -', '("-" -')
-            )
+    @staticmethod
+    def normalize_column_name(name):
+        return re.sub(r'\s+', ' ', name).strip()
 
-            column_mapping = {
-                'Контроль по дате (- - просрочка)': 'Контроль по дате ("-" - просрочка)',
-                'Контроль по оплате цены (- переплата; + - недоплата)': 
-                    'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
-                'неоплаченные ПЕНИ (+ - недоплата; - переплата)': 
-                    'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
-            }
-            df.rename(columns=column_mapping, inplace=True)
-
-            expected = self.expected_columns[self.file_type]
-            df = df.loc[:, ~df.columns.duplicated()]
-            df = df.reindex(columns=expected)
-
-            money_columns = ['Цена ЗУ по договору, руб.', 'Оплачено', 'начисленные ПЕНИ', 'оплачено пеней']
-            for col in money_columns:
-                if col in df.columns:
-                    df[col] = (
-                        df[col].astype(str)
-                        .str.replace(r'[^\d,.]', '', regex=True)
-                        .str.replace(',', '.')
-                    )
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                    df[col] = df[col].fillna(0.0)
-
-            if list(df.columns) != expected:
-                mismatch = list(set(expected) - set(df.columns)) + list(set(df.columns) - set(expected))
-                messagebox.showerror(
-                    "Ошибка", 
-                    f"Несовпадение колонок:\n{', '.join(mismatch)}"
-                )
-                return
-
-            self.parent.db.import_from_dataframe(self.file_type, df)
-            self.update_treeview()
-            
-        except Exception as e:
-            messagebox.showerror("Ошибка", f"Ошибка обработки данных: {str(e)}")
-    
     def create_new(self):
         self.update_treeview()
     
+    def show_loading_indicator(self):
+        if not self.loading_label:
+            self.loading_label = ttk.Label(
+                self,
+                text="Загрузка данных...",
+                font=('Arial', 14),
+                background='#ffffff',
+                relief='solid'
+            )
+            self.loading_label.place(relx=0.5, rely=0.5, anchor='center')
+        self.loading_label.lift()
+
+    def hide_loading_indicator(self):
+        if self.loading_label:
+            self.loading_label.destroy()
+            self.loading_label = None
+
     def update_treeview(self):
         self.tree.delete(*self.tree.get_children())
         records = self.parent.db.get_all_records(self.file_type)
         
+        # Получаем реальные названия колонок из базы данных
+        with self.parent.db.conn:
+            cursor = self.parent.db.conn.cursor()
+            cursor.execute(f"PRAGMA table_info({self.parent.db.get_table_name(self.file_type)})")
+            db_columns = [col[1] for col in cursor.fetchall()][1:]  # исключаем id
+        
+        # Обновляем columns в treeview
+        self.tree["columns"] = db_columns
+        for col in db_columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=200, anchor='w')
+        
+        # Заполняем данными
         for record in records:
-            values = list(record[1:])
-            
-            # Инициализируем переменные значениями по умолчанию
-            days_diff = 0
-            payment_diff = 0
-            unpaid_pen = 0
+            values = list(record[1:])  # пропускаем первый элемент (id)
+            tags = []
             
             try:
-                due_date = datetime.strptime(values[8], "%d.%m.%Y")  
-                actual_date = datetime.strptime(values[9], "%d.%m.%Y")    
-                days_diff = (actual_date - due_date).days
-                values.insert(10, days_diff)
+                # Проверка просрочки
+                due_date = datetime.strptime(values[8], "%d.%m.%Y")
+                actual_date = datetime.strptime(values[9], "%d.%m.%Y")
+                if (actual_date - due_date).days < 0:
+                    tags.append('overdue')
                 
-                price = float(values[7].replace(' ', '').replace(',', '.'))  
-                paid = float(values[12].replace(' ', '').replace(',', '.')) 
-                payment_diff = price - paid
-                values.insert(13, payment_diff)
-                
-                penalties = float(values[15].replace(' ', '').replace(',', '.'))  
-                paid_pen = float(values[16].replace(' ', '').replace(',', '.'))  
-                unpaid_pen = penalties - paid_pen
-                values.insert(17, unpaid_pen)
-                
-            except Exception as e:
-                # Добавляем недостающие значения в случае ошибки
-                values += [0, 0, 0] 
-            
-            tags = []
-            if days_diff < 0:
-                tags.append('overdue')
-            if payment_diff != 0:
-                tags.append('warning')
+                # Проверка оплаты
+                price = float(values[7])
+                paid = float(values[12])
+                if price != paid:
+                    tags.append('warning')
+                    
+            except (ValueError, IndexError, TypeError):
+                pass
             
             self.tree.insert('', 'end', values=values, tags=tags)
+        
+        # Автоподбор ширины колонок
+        for col in db_columns:
+            max_width = max(
+                font.Font().measure(str(col)) + 20,  # ширина заголовка
+                *[font.Font().measure(str(self.tree.set(item, col))) + 20 
+                for item in self.tree.get_children()]
+            )
+            self.tree.column(col, width=min(max_width, 400))
     
     def on_double_click(self, event):
         region = self.tree.identify_region(event.x, event.y)
