@@ -26,14 +26,14 @@ class DatabaseHandler:
                 '"Цена ЗУ по договору, руб." REAL',
                 '"Срок оплаты по договору" TEXT',
                 '"Фактическая дата оплаты" TEXT',
-                '"Контроль по дате" TEXT',
+                '"Контроль по дате (""-"" - просрочка)" TEXT',
                 '"№ выписки учета поступлений, № ПП" TEXT',
                 '"Оплачено" REAL',
-                '"Контроль по оплате цены" TEXT',
+                '"Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" TEXT',
                 '"примечание" TEXT',
                 '"начисленные ПЕНИ" REAL',
                 '"оплачено пеней" REAL',
-                '"неоплаченные ПЕНИ" TEXT',
+                '"неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" TEXT',
                 '"Дата выписки учета поступлений, № ПП" TEXT',
                 '"Возврат имеющейся переплаты" TEXT'
             ],
@@ -71,16 +71,24 @@ class DatabaseHandler:
     
     def import_from_dataframe(self, file_type, df):
         table = self.get_table_name(file_type)
-        # Обрабатываем имена столбцов для SQL
-        columns = [f'"{col}"' for col in df.columns.tolist()]
+        for col in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                df[col] = df[col].dt.strftime('%d.%m.%Y')
+        # Экранируем двойные кавычки внутри названий колонок
+        columns = [f'"{col.replace("\"", "\"\"")}"' for col in df.columns.tolist()]
         placeholders = ', '.join(['?'] * len(columns))
         
         with self.conn:
             cursor = self.conn.cursor()
-            cursor.executemany(f'''
-                INSERT INTO {table} ({', '.join(columns)})
-                VALUES ({placeholders})
-            ''', df.values.tolist())
+            try:
+                cursor.executemany(
+                    f'''INSERT INTO {table} ({', '.join(columns)})
+                        VALUES ({placeholders})''',
+                    df.values.tolist()
+                )
+            except sqlite3.Error as e:
+                print("SQL error:", e)
+                raise
     
     def export_to_dataframe(self, file_type):
         table = self.get_table_name(file_type)
@@ -148,7 +156,7 @@ class FileWindow(tk.Toplevel):
         3: ['Номер', 'ЗУ', 'Заявитель', 'Период']
     }  
     
-    def __init__(self, parent, file_type):  # Теперь правильный отступ
+    def __init__(self, parent, file_type): 
         super().__init__(parent)
         self.parent = parent
         self.file_type = file_type
@@ -169,7 +177,6 @@ class FileWindow(tk.Toplevel):
         self.tree.tag_configure('overdue', background='#ffcccc')
         self.tree.tag_configure('warning', background='#ffffcc')
 
-    # Добавить метод create_widgets из старой версии
     def create_widgets(self):
         container = ttk.Frame(self)
         container.pack(fill='both', expand=True)
@@ -199,7 +206,6 @@ class FileWindow(tk.Toplevel):
         except:
             return False
 
-    # Добавить метод filter_data из старой версии
     def filter_data(self, event=None):
         query = self.search_var.get().lower()
         col = self.column_var.get()
@@ -253,48 +259,52 @@ class FileWindow(tk.Toplevel):
             return
         
         try:
-            # Читаем файл
+            # Убрали дублирующийся код загрузки Excel
             if file_path.endswith('.xls'):
                 df = pd.read_excel(file_path, engine='xlrd')
             elif file_path.endswith('.xlsx'):
                 df = pd.read_excel(file_path, engine='openpyxl')
 
-            # Нормализация названий колонок
+            # Преобразование дат из строк в datetime и обратно в строку
+            date_columns = ['Дата заключения договора', 'Срок оплаты по договору', 
+                            'Фактическая дата оплаты', 'Дата выписки учета поступлений, № ПП']
+            for col in date_columns:
+                if col in df.columns:
+                    # Преобразуем в datetime с учетом формата день.месяц.год
+                    df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
+                    # Конвертируем обратно в строку с нужным форматом
+                    df[col] = df[col].dt.strftime('%d.%m.%Y')
+                    
+            # Дальнейшая обработка колонок (остается без изменений)
             df.columns = (
                 df.columns.str.strip()
-                .str.replace(r'[“”„"\']', '', regex=True)
-                .str.replace('\n', ' ')
                 .str.replace(r'\s+', ' ', regex=True)
-                .str.replace(r'\.\d+$', '', regex=True)
+                .str.replace(r'[“”„"]', '', regex=True)
+                .str.replace('("-" -', '("-" -')
             )
 
-            # Приводим к ожидаемым названиям
             column_mapping = {
-                'Контроль по дате - просрочка': 'Контроль по дате ("-" - просрочка)',
-                'Контроль по оплате цены - переплата; + - недоплата': 'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
-                'неоплаченные ПЕНИ + - недоплата; - переплата': 'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
+                'Контроль по дате (- - просрочка)': 'Контроль по дате ("-" - просрочка)',
+                'Контроль по оплате цены (- переплата; + - недоплата)': 
+                    'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
+                'неоплаченные ПЕНИ (+ - недоплата; - переплата)': 
+                    'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
             }
-            
             df.rename(columns=column_mapping, inplace=True)
 
-            # Удаляем лишние колонки
             expected = self.expected_columns[self.file_type]
             df = df.loc[:, ~df.columns.duplicated()]
             df = df.reindex(columns=expected)
 
-            # Конвертация числовых полей с обработкой ошибок
             money_columns = ['Цена ЗУ по договору, руб.', 'Оплачено', 'начисленные ПЕНИ', 'оплачено пеней']
             for col in money_columns:
                 if col in df.columns:
-                    # Заменяем все нецифровые символы, кроме точки и запятой
                     df[col] = (
                         df[col].astype(str)
                         .str.replace(r'[^\d,.]', '', regex=True)
                         .str.replace(',', '.')
                     )
-                    # Конвертируем в float, ошибки заменяем на NaN
                     df[col] = pd.to_numeric(df[col], errors='coerce')
-                    # Заменяем NaN на 0.0
                     df[col] = df[col].fillna(0.0)
 
             if list(df.columns) != expected:
@@ -312,7 +322,6 @@ class FileWindow(tk.Toplevel):
             messagebox.showerror("Ошибка", f"Ошибка обработки данных: {str(e)}")
     
     def create_new(self):
-        # Создаем пустую таблицу в Treeview
         self.update_treeview()
     
     def update_treeview(self):
@@ -320,29 +329,33 @@ class FileWindow(tk.Toplevel):
         records = self.parent.db.get_all_records(self.file_type)
         
         for record in records:
-            values = list(record[1:])  # Пропускаем ID
+            values = list(record[1:])
             
-            # Рассчитываем контрольные поля
+            # Инициализируем переменные значениями по умолчанию
+            days_diff = 0
+            payment_diff = 0
+            unpaid_pen = 0
+            
             try:
-                due_date = datetime.strptime(values[8], "%d.%m.%Y")  # Срок оплаты
-                actual_date = datetime.strptime(values[9], "%d.%m.%Y")  # Фактическая оплата
+                due_date = datetime.strptime(values[8], "%d.%m.%Y")  
+                actual_date = datetime.strptime(values[9], "%d.%m.%Y")    
                 days_diff = (actual_date - due_date).days
                 values.insert(10, days_diff)
                 
-                price = float(values[7].replace(' ', '').replace(',', '.'))  # Цена ЗУ
-                paid = float(values[12].replace(' ', '').replace(',', '.'))  # Оплачено
+                price = float(values[7].replace(' ', '').replace(',', '.'))  
+                paid = float(values[12].replace(' ', '').replace(',', '.')) 
                 payment_diff = price - paid
                 values.insert(13, payment_diff)
                 
-                penalties = float(values[15].replace(' ', '').replace(',', '.'))  # Начисленные пени
-                paid_pen = float(values[16].replace(' ', '').replace(',', '.'))  # Оплачено пеней
+                penalties = float(values[15].replace(' ', '').replace(',', '.'))  
+                paid_pen = float(values[16].replace(' ', '').replace(',', '.'))  
                 unpaid_pen = penalties - paid_pen
                 values.insert(17, unpaid_pen)
                 
-            except:
-                values += [0, 0, 0]  # Заглушки при ошибках
+            except Exception as e:
+                # Добавляем недостающие значения в случае ошибки
+                values += [0, 0, 0] 
             
-            # Добавляем теги для подсветки
             tags = []
             if days_diff < 0:
                 tags.append('overdue')
@@ -410,9 +423,7 @@ class FileWindow(tk.Toplevel):
     
     def save_file(self):
         try:
-            # Экспортируем данные из БД в DataFrame
             df = self.parent.db.export_to_dataframe(self.file_type)
-            # Удаляем столбец id
             df = df.drop(columns=['id'])
             
             file_path = filedialog.asksaveasfilename(
