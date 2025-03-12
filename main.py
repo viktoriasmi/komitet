@@ -166,6 +166,18 @@ class FileWindow(tk.Toplevel):
         self.update_treeview()
         self.setup_tags()
         self.state('zoomed')  
+        self.date_columns = {
+            1: ['Дата заключения договора', 'Срок оплаты по договору', 
+                'Фактическая дата оплаты', 'Дата выписки учета поступлений, № ПП'],
+            2: [],
+            3: []
+        }
+        self.numeric_columns = {
+            1: ['Цена ЗУ по договору, руб.', 'Оплачено', 
+                'начисленные ПЕНИ', 'оплачено пеней'],
+            2: [],
+            3: []
+        }
     
     def configure_ui(self):
         self.title(f"Реестр типа {self.file_type}")
@@ -336,7 +348,22 @@ class FileWindow(tk.Toplevel):
         table = self.parent.db.get_table_name(self.file_type)
         with self.parent.db.conn:
             cursor = self.parent.db.conn.cursor()
-            cursor.execute(f"INSERT INTO {table} DEFAULT VALUES")
+            columns = [f'"{col.replace("\"", "\"\"")}"' for col in self.expected_columns[self.file_type]]
+            placeholders = ', '.join(['?'] * len(columns))
+            
+            # Значения по умолчанию для числовых полей
+            default_values = []
+            for col in self.expected_columns[self.file_type]:
+                if col in self.numeric_columns.get(self.file_type, []):
+                    default_values.append(0.0)
+                else:
+                    default_values.append('')
+            
+            cursor.execute(
+                f'''INSERT INTO {table} ({', '.join(columns)})
+                    VALUES ({placeholders})''',
+                default_values
+            )
         self.update_treeview()
     
     def update_treeview(self):
@@ -344,32 +371,40 @@ class FileWindow(tk.Toplevel):
         records = self.parent.db.get_all_records(self.file_type)
         
         for record in records:
-            values = ['' if v is None else v for v in record[1:]]
+            values = [str(v) if v is not None else '' for v in record]
             
-            # Инициализируем переменные значениями по умолчанию
+            # Инициализация переменных по умолчанию
             days_diff = 0
             payment_diff = 0
             unpaid_pen = 0
             
             try:
-                due_date = datetime.strptime(values[8], "%d.%m.%Y")  
-                actual_date = datetime.strptime(values[9], "%d.%m.%Y")    
-                days_diff = (actual_date - due_date).days
-                values.insert(10, days_diff)
+                # Получение дат (проверьте индексы!)
+                due_date_str = values[9]    # Срок оплаты по договору
+                actual_date_str = values[10] # Фактическая дата оплаты
                 
-                price = float(values[7].replace(' ', '').replace(',', '.'))  
-                paid = float(values[12].replace(' ', '').replace(',', '.')) 
+                if due_date_str and actual_date_str:
+                    due_date = datetime.strptime(due_date_str, "%d.%m.%Y")
+                    actual_date = datetime.strptime(actual_date_str, "%d.%m.%Y")    
+                    days_diff = (actual_date - due_date).days
+                
+                # Обработка числовых значений с защитой от ошибок
+                def safe_float_conversion(val):
+                    try:
+                        return float(str(val).replace(' ', '').replace(',', '.'))
+                    except:
+                        return 0.0
+                
+                price = safe_float_conversion(values[7])  # Цена ЗУ
+                paid = safe_float_conversion(values[12])  # Оплачено
                 payment_diff = price - paid
-                values.insert(13, payment_diff)
                 
-                penalties = float(values[15].replace(' ', '').replace(',', '.'))  
-                paid_pen = float(values[16].replace(' ', '').replace(',', '.'))  
+                penalties = safe_float_conversion(values[15])  # Начисленные пени
+                paid_pen = safe_float_conversion(values[16])   # Оплачено пеней
                 unpaid_pen = penalties - paid_pen
-                values.insert(17, unpaid_pen)
                 
             except Exception as e:
-                # Добавляем недостающие значения в случае ошибки
-                values += [0, 0, 0] 
+                print("Error in calculations:", e)
             
             tags = []
             if days_diff < 0:
@@ -378,6 +413,12 @@ class FileWindow(tk.Toplevel):
                 tags.append('warning')
             
             self.tree.insert('', 'end', values=values, tags=tags)
+    
+    def safe_float_conversion(self, val):
+        try:
+            return float(str(val).replace(' ', '').replace(',', '.'))
+        except ValueError:
+            return 0.0
     
     def on_double_click(self, event):
         region = self.tree.identify_region(event.x, event.y)
@@ -389,29 +430,47 @@ class FileWindow(tk.Toplevel):
         
         col_index = int(column[1:]) - 1
         current_value = self.tree.item(item, 'values')[col_index]
+        if current_value == 'None':
+            current_value = ''
         col_name = self.expected_columns[self.file_type][col_index]
         
         edit_win = tk.Toplevel(self)
         edit_win.title("Редактирование")
+        edit_win.geometry("300x100")
         
-        if col_name in ['Дата заключения', 'Срок оплаты', 'Фактическая оплата']:
-            entry = ttk.Entry(edit_win, font=('Arial', 12))
-            entry.pack(padx=10, pady=10)
+        # Создаем фрейм для центрирования
+        main_frame = ttk.Frame(edit_win)
+        main_frame.pack(expand=True, fill='both', padx=10, pady=10)
+        
+        entry = None
+        
+        # Для дат
+        if col_name in self.date_columns.get(self.file_type, []):
+            entry = ttk.Entry(main_frame, font=('Arial', 12))
             entry.insert(0, current_value)
-            entry.bind('<FocusIn>', lambda e: self.show_calendar_dialog(entry, col_name))
+            # Валидация даты
+            vcmd = (edit_win.register(lambda P: self.validate_date_entry(P)), '%P')
+            entry.configure(validate='key', validatecommand=vcmd)
+        
+        # Для числовых полей
+        elif col_name in self.numeric_columns.get(self.file_type, []):
+            entry = ttk.Entry(main_frame, font=('Arial', 12))
+            entry.insert(0, current_value)
+            # Валидация чисел
+            vcmd = (edit_win.register(lambda P: self.validate_number_entry(P)), '%P')
+            entry.configure(validate='key', validatecommand=vcmd)
+        
+        # Для остальных полей
         else:
-            entry = ttk.Entry(edit_win, font=('Arial', 12))
-            entry.pack(padx=10, pady=10)
+            entry = ttk.Entry(main_frame, font=('Arial', 12))
             entry.insert(0, current_value)
         
-        # Валидация для числовых полей
-        if col_name in ['Цена ЗУ', 'Оплачено', 'Начисленные пени', 'Оплачено пеней']:
-            validate_cmd = (edit_win.register(self.validate_number), '%P')
-            entry.configure(validate='key', validatecommand=validate_cmd)
+        entry.pack(pady=5, fill='x')
         
         def save_edit():
             new_value = entry.get()
-            record_id = self.tree.item(item, 'values')[0]
+            # Получаем ID записи из первого столбца
+            record_id = self.tree.item(item, 'values')[0]  
             try:
                 self.parent.db.update_record(
                     file_type=self.file_type,
@@ -424,8 +483,23 @@ class FileWindow(tk.Toplevel):
             except Exception as e:
                 messagebox.showerror("Ошибка", str(e))
         
-        ttk.Button(edit_win, text="Сохранить", command=save_edit).pack(pady=5)
-        
+        ttk.Button(main_frame, text="Сохранить", command=save_edit).pack(pady=5)
+
+    def validate_date_entry(self, value):
+        if value == "":
+            return True
+        try:
+            parse(value, dayfirst=True)
+            return True
+        except:
+            return False
+
+    def validate_number_entry(self, value):
+        if value in ["", "-", "+"]:
+            return True
+        pattern = r'^[+-]?\d*[.,]?\d*$'
+        return re.match(pattern, value) is not None
+
     def validate_number(self, value):
         return value == "" or value.isdigit()
 
