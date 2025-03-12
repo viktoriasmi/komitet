@@ -166,18 +166,6 @@ class FileWindow(tk.Toplevel):
         self.update_treeview()
         self.setup_tags()
         self.state('zoomed')  
-        self.date_columns = {
-            1: ['Дата заключения договора', 'Срок оплаты по договору', 
-                'Фактическая дата оплаты', 'Дата выписки учета поступлений, № ПП'],
-            2: [],
-            3: []
-        }
-        self.numeric_columns = {
-            1: ['Цена ЗУ по договору, руб.', 'Оплачено', 
-                'начисленные ПЕНИ', 'оплачено пеней'],
-            2: [],
-            3: []
-        }
     
     def configure_ui(self):
         self.title(f"Реестр типа {self.file_type}")
@@ -345,66 +333,100 @@ class FileWindow(tk.Toplevel):
             messagebox.showerror("Ошибка", f"Ошибка обработки данных: {str(e)}")
     
     def create_new(self):
-        table = self.parent.db.get_table_name(self.file_type)
-        with self.parent.db.conn:
-            cursor = self.parent.db.conn.cursor()
-            columns = [f'"{col.replace("\"", "\"\"")}"' for col in self.expected_columns[self.file_type]]
-            placeholders = ', '.join(['?'] * len(columns))
+        try:
+            expected = self.expected_columns[self.file_type]
             
-            # Значения по умолчанию для числовых полей
-            default_values = []
-            for col in self.expected_columns[self.file_type]:
-                if col in self.numeric_columns.get(self.file_type, []):
-                    default_values.append(0.0)
-                else:
-                    default_values.append('')
+            # Создаем данные по умолчанию в соответствии с типом реестра
+            if self.file_type == 1:
+                default_data = {
+                    'Номер договора': 0,
+                    'Дата заключения договора': datetime.now().strftime('%d.%m.%Y'),
+                    'Покупатель, ИНН': '',
+                    'Кадастровый номер ЗУ, адрес ЗУ': '',
+                    'Площадь ЗУ, кв. м': 0.0,
+                    'Разрешенное использование ЗУ': '',
+                    'Основание предоставления': '',
+                    'Цена ЗУ по договору, руб.': 0.0,
+                    'Срок оплаты по договору': datetime.now().strftime('%d.%m.%Y'),
+                    'Фактическая дата оплаты': '',
+                    '№ выписки учета поступлений, № ПП': '',
+                    'Оплачено': 0.0,
+                    'примечание': '',
+                    'начисленные ПЕНИ': 0.0,
+                    'оплачено пеней': 0.0,
+                    'Дата выписки учета поступлений, № ПП': '',
+                    'Возврат имеющейся переплаты': ''
+                }
+            else:
+                default_data = {col: '' for col in expected}
             
-            cursor.execute(
-                f'''INSERT INTO {table} ({', '.join(columns)})
-                    VALUES ({placeholders})''',
-                default_values
-            )
-        self.update_treeview()
+            # Создаем DataFrame с одной строкой
+            df = pd.DataFrame([default_data], columns=expected)
+            
+            # Применяем преобразования как при импорте из Excel
+            # Обработка числовых полей
+            numeric_columns = {
+                1: ['Цена ЗУ по договору, руб.', 'Оплачено', 
+                    'начисленные ПЕНИ', 'оплачено пеней'],
+                2: [],
+                3: []
+            }.get(self.file_type, [])
+            
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.replace(r'[^\d,.]', '', regex=True)
+                    df[col] = df[col].str.replace(',', '.').astype(float)
+            
+            # Обработка дат
+            date_columns = {
+                1: ['Дата заключения договора', 'Срок оплаты по договору', 
+                    'Фактическая дата оплаты', 'Дата выписки учета поступлений, № ПП'],
+                2: [],
+                3: []
+            }.get(self.file_type, [])
+            
+            for col in date_columns:
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce').dt.strftime('%d.%m.%Y')
+            
+            # Добавляем через существующий импортный метод
+            self.parent.db.import_from_dataframe(self.file_type, df)
+            self.update_treeview()
+            
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка при создании новой записи: {str(e)}")
     
     def update_treeview(self):
         self.tree.delete(*self.tree.get_children())
         records = self.parent.db.get_all_records(self.file_type)
         
         for record in records:
-            values = [str(v) if v is not None else '' for v in record]
+            values = ['' if v is None else v for v in record[1:]]
             
-            # Инициализация переменных по умолчанию
+            # Инициализируем переменные значениями по умолчанию
             days_diff = 0
             payment_diff = 0
             unpaid_pen = 0
             
             try:
-                # Получение дат (проверьте индексы!)
-                due_date_str = values[9]    # Срок оплаты по договору
-                actual_date_str = values[10] # Фактическая дата оплаты
+                due_date = datetime.strptime(values[8], "%d.%m.%Y")  
+                actual_date = datetime.strptime(values[9], "%d.%m.%Y")    
+                days_diff = (actual_date - due_date).days
+                values.insert(10, days_diff)
                 
-                if due_date_str and actual_date_str:
-                    due_date = datetime.strptime(due_date_str, "%d.%m.%Y")
-                    actual_date = datetime.strptime(actual_date_str, "%d.%m.%Y")    
-                    days_diff = (actual_date - due_date).days
-                
-                # Обработка числовых значений с защитой от ошибок
-                def safe_float_conversion(val):
-                    try:
-                        return float(str(val).replace(' ', '').replace(',', '.'))
-                    except:
-                        return 0.0
-                
-                price = safe_float_conversion(values[7])  # Цена ЗУ
-                paid = safe_float_conversion(values[12])  # Оплачено
+                price = float(values[7].replace(' ', '').replace(',', '.'))  
+                paid = float(values[12].replace(' ', '').replace(',', '.')) 
                 payment_diff = price - paid
+                values.insert(13, payment_diff)
                 
-                penalties = safe_float_conversion(values[15])  # Начисленные пени
-                paid_pen = safe_float_conversion(values[16])   # Оплачено пеней
+                penalties = float(values[15].replace(' ', '').replace(',', '.'))  
+                paid_pen = float(values[16].replace(' ', '').replace(',', '.'))  
                 unpaid_pen = penalties - paid_pen
+                values.insert(17, unpaid_pen)
                 
             except Exception as e:
-                print("Error in calculations:", e)
+                # Добавляем недостающие значения в случае ошибки
+                values += [0, 0, 0] 
             
             tags = []
             if days_diff < 0:
@@ -413,12 +435,6 @@ class FileWindow(tk.Toplevel):
                 tags.append('warning')
             
             self.tree.insert('', 'end', values=values, tags=tags)
-    
-    def safe_float_conversion(self, val):
-        try:
-            return float(str(val).replace(' ', '').replace(',', '.'))
-        except ValueError:
-            return 0.0
     
     def on_double_click(self, event):
         region = self.tree.identify_region(event.x, event.y)
@@ -430,47 +446,29 @@ class FileWindow(tk.Toplevel):
         
         col_index = int(column[1:]) - 1
         current_value = self.tree.item(item, 'values')[col_index]
-        if current_value == 'None':
-            current_value = ''
         col_name = self.expected_columns[self.file_type][col_index]
         
         edit_win = tk.Toplevel(self)
         edit_win.title("Редактирование")
-        edit_win.geometry("300x100")
         
-        # Создаем фрейм для центрирования
-        main_frame = ttk.Frame(edit_win)
-        main_frame.pack(expand=True, fill='both', padx=10, pady=10)
-        
-        entry = None
-        
-        # Для дат
-        if col_name in self.date_columns.get(self.file_type, []):
-            entry = ttk.Entry(main_frame, font=('Arial', 12))
+        if col_name in ['Дата заключения', 'Срок оплаты', 'Фактическая оплата']:
+            entry = ttk.Entry(edit_win, font=('Arial', 12))
+            entry.pack(padx=10, pady=10)
             entry.insert(0, current_value)
-            # Валидация даты
-            vcmd = (edit_win.register(lambda P: self.validate_date_entry(P)), '%P')
-            entry.configure(validate='key', validatecommand=vcmd)
-        
-        # Для числовых полей
-        elif col_name in self.numeric_columns.get(self.file_type, []):
-            entry = ttk.Entry(main_frame, font=('Arial', 12))
-            entry.insert(0, current_value)
-            # Валидация чисел
-            vcmd = (edit_win.register(lambda P: self.validate_number_entry(P)), '%P')
-            entry.configure(validate='key', validatecommand=vcmd)
-        
-        # Для остальных полей
+            entry.bind('<FocusIn>', lambda e: self.show_calendar_dialog(entry, col_name))
         else:
-            entry = ttk.Entry(main_frame, font=('Arial', 12))
+            entry = ttk.Entry(edit_win, font=('Arial', 12))
+            entry.pack(padx=10, pady=10)
             entry.insert(0, current_value)
         
-        entry.pack(pady=5, fill='x')
+        # Валидация для числовых полей
+        if col_name in ['Цена ЗУ', 'Оплачено', 'Начисленные пени', 'Оплачено пеней']:
+            validate_cmd = (edit_win.register(self.validate_number), '%P')
+            entry.configure(validate='key', validatecommand=validate_cmd)
         
         def save_edit():
             new_value = entry.get()
-            # Получаем ID записи из первого столбца
-            record_id = self.tree.item(item, 'values')[0]  
+            record_id = self.tree.item(item, 'values')[0]
             try:
                 self.parent.db.update_record(
                     file_type=self.file_type,
@@ -483,23 +481,8 @@ class FileWindow(tk.Toplevel):
             except Exception as e:
                 messagebox.showerror("Ошибка", str(e))
         
-        ttk.Button(main_frame, text="Сохранить", command=save_edit).pack(pady=5)
-
-    def validate_date_entry(self, value):
-        if value == "":
-            return True
-        try:
-            parse(value, dayfirst=True)
-            return True
-        except:
-            return False
-
-    def validate_number_entry(self, value):
-        if value in ["", "-", "+"]:
-            return True
-        pattern = r'^[+-]?\d*[.,]?\d*$'
-        return re.match(pattern, value) is not None
-
+        ttk.Button(edit_win, text="Сохранить", command=save_edit).pack(pady=5)
+        
     def validate_number(self, value):
         return value == "" or value.isdigit()
 
