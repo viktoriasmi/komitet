@@ -401,7 +401,8 @@ class FileWindow(tk.Toplevel):
         records = self.parent.db.get_all_records(self.file_type)
         
         for record in records:
-            values = ['' if v is None else v for v in record[1:]]
+            record_id = record[0]
+            values = ['' if v is None else str(v) for v in record[1:]]  # Конвертируем все значения в строки
             
             # Инициализируем переменные значениями по умолчанию
             days_diff = 0
@@ -409,24 +410,33 @@ class FileWindow(tk.Toplevel):
             unpaid_pen = 0
             
             try:
-                due_date = datetime.strptime(values[8], "%d.%m.%Y")  
-                actual_date = datetime.strptime(values[9], "%d.%m.%Y")    
-                days_diff = (actual_date - due_date).days
-                values.insert(10, days_diff)
+                # Обработка дат
+                if values[8] and values[9]:  # Проверяем наличие дат
+                    due_date = datetime.strptime(values[8], "%d.%m.%Y")
+                    actual_date = datetime.strptime(values[9], "%d.%m.%Y")    
+                    days_diff = (actual_date - due_date).days
                 
-                price = float(values[7].replace(' ', '').replace(',', '.'))  
-                paid = float(values[12].replace(' ', '').replace(',', '.')) 
+                # Обработка числовых значений
+                price = float(values[7].replace(' ', '').replace(',', '.')) if values[7] else 0.0
+                paid = float(values[12].replace(' ', '').replace(',', '.')) if values[12] else 0.0
                 payment_diff = price - paid
-                values.insert(13, payment_diff)
                 
-                penalties = float(values[15].replace(' ', '').replace(',', '.'))  
-                paid_pen = float(values[16].replace(' ', '').replace(',', '.'))  
+                penalties = float(values[15].replace(' ', '').replace(',', '.')) if values[15] else 0.0
+                paid_pen = float(values[16].replace(' ', '').replace(',', '.')) if values[16] else 0.0
                 unpaid_pen = penalties - paid_pen
-                values.insert(17, unpaid_pen)
                 
+                # Вставляем вычисляемые поля
+                if len(values) >= 10:
+                    values.insert(10, days_diff)
+                if len(values) >= 14:
+                    values.insert(13, payment_diff)
+                if len(values) >= 18:
+                    values.insert(17, unpaid_pen)
+                    
             except Exception as e:
-                # Добавляем недостающие значения в случае ошибки
-                values += [0, 0, 0] 
+                # Добавляем недостающие значения
+                while len(values) < 20:
+                    values.append('')
             
             tags = []
             if days_diff < 0:
@@ -434,15 +444,15 @@ class FileWindow(tk.Toplevel):
             if payment_diff != 0:
                 tags.append('warning')
             
-            self.tree.insert('', 'end', values=values, tags=tags)
+            self.tree.insert('', 'end', values=values, tags=(record_id,), iid=str(record_id))
     
     def on_double_click(self, event):
         region = self.tree.identify_region(event.x, event.y)
         if region != "cell":
             return
         
-        column = self.tree.identify_column(event.x)
         item = self.tree.identify_row(event.y)
+        column = self.tree.identify_column(event.x)
         
         col_index = int(column[1:]) - 1
         current_value = self.tree.item(item, 'values')[col_index]
@@ -450,38 +460,43 @@ class FileWindow(tk.Toplevel):
         
         edit_win = tk.Toplevel(self)
         edit_win.title("Редактирование")
+        edit_win.geometry("400x150")  # Увеличиваем размер окна
         
-        if col_name in ['Дата заключения', 'Срок оплаты', 'Фактическая оплата']:
-            entry = ttk.Entry(edit_win, font=('Arial', 12))
-            entry.pack(padx=10, pady=10)
-            entry.insert(0, current_value)
-            entry.bind('<FocusIn>', lambda e: self.show_calendar_dialog(entry, col_name))
-        else:
-            entry = ttk.Entry(edit_win, font=('Arial', 12))
-            entry.pack(padx=10, pady=10)
-            entry.insert(0, current_value)
+        # Получаем ID записи из дерева
+        record_id = self.tree.item(item, 'tags')[0] if self.tree.item(item, 'tags') else item
         
-        # Валидация для числовых полей
-        if col_name in ['Цена ЗУ', 'Оплачено', 'Начисленные пени', 'Оплачено пеней']:
+        # Увеличиваем размер поля ввода
+        entry = ttk.Entry(edit_win, font=('Arial', 12), width=30)
+        entry.pack(padx=20, pady=20, fill='x', expand=True)
+        entry.insert(0, current_value)
+        
+        # Добавляем валидацию для числовых полей
+        if col_name in ['Цена ЗУ по договору, руб.', 'Оплачено', 'начисленные ПЕНИ', 'оплачено пеней']:
             validate_cmd = (edit_win.register(self.validate_number), '%P')
             entry.configure(validate='key', validatecommand=validate_cmd)
         
         def save_edit():
             new_value = entry.get()
-            record_id = self.tree.item(item, 'values')[0]
             try:
+                # Используем правильный record_id
                 self.parent.db.update_record(
                     file_type=self.file_type,
-                    record_id=record_id,
+                    record_id=record_id,  # Исправлено: используем корректный ID
                     column=col_name,
                     value=new_value
                 )
                 self.update_treeview()
                 edit_win.destroy()
+                messagebox.showinfo("Успех", "Изменения успешно сохранены!")
             except Exception as e:
                 messagebox.showerror("Ошибка", str(e))
         
-        ttk.Button(edit_win, text="Сохранить", command=save_edit).pack(pady=5)
+        # Увеличиваем размер кнопки
+        btn_frame = ttk.Frame(edit_win)
+        btn_frame.pack(fill='x', padx=20, pady=10)
+        
+        ttk.Button(btn_frame, text="Сохранить", command=save_edit, width=15).pack(side='right')
+        ttk.Button(btn_frame, text="Отмена", command=edit_win.destroy, width=15).pack(side='right', padx=5)
         
     def validate_number(self, value):
         return value == "" or value.isdigit()
