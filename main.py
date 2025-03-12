@@ -463,7 +463,7 @@ class FileWindow(tk.Toplevel):
         edit_win.geometry("400x150")  # Увеличиваем размер окна
         
         # Получаем ID записи из дерева
-        record_id = self.tree.item(item, 'tags')[0] if self.tree.item(item, 'tags') else item
+        record_id = self.tree.item(item, 'tags')[0] if self.tree.item(item, 'tags') else self.tree.item(item, 'iid')
         
         # Увеличиваем размер поля ввода
         entry = ttk.Entry(edit_win, font=('Arial', 12), width=30)
