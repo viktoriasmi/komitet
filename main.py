@@ -64,11 +64,13 @@ class DatabaseHandler:
     
     def update_record(self, file_type, record_id, column, value):
         table = self.get_table_name(file_type)
+        # Экранируем двойные кавычки в названии колонки
+        column_escaped = column.replace('"', '""')
         with self.conn:
             cursor = self.conn.cursor()
             cursor.execute(f'''
                 UPDATE {table}
-                SET "{column}" = ?
+                SET "{column_escaped}" = ?
                 WHERE id = ?
             ''', (value, record_id))
     
@@ -471,12 +473,11 @@ class FileWindow(tk.Toplevel):
             
             if self.file_type == 1:
                 # Индексы контрольных колонок
-                control_date_idx = 10  # Контроль по дате
-                control_payment_idx = 13 # Контроль по оплате
-                control_peni_idx = 17   # Неоплаченные пени
+                control_date_idx = 10
+                control_payment_idx = 13
+                control_peni_idx = 17
                 
                 try:
-                    # Проверяем каждую контрольную колонку
                     for idx in [control_date_idx, control_payment_idx, control_peni_idx]:
                         value = values[idx]
                         if isinstance(value, str):
@@ -484,7 +485,8 @@ class FileWindow(tk.Toplevel):
                             if value.startswith('-') and value != '-':
                                 tags.append('overdue')
                         elif isinstance(value, (int, float)):
-                            if value < 0:
+                            # Изменяем условие для отрицательных значений
+                            if float(value) < 0:
                                 tags.append('overdue')
                 except Exception as e:
                     print(f"Ошибка при проверке подсветки: {e}")
@@ -551,8 +553,11 @@ class FileWindow(tk.Toplevel):
                 if due_date_str and actual_date_str:
                     due_date = datetime.strptime(due_date_str, '%d.%m.%Y')
                     actual_date = datetime.strptime(actual_date_str, '%d.%m.%Y')
-                    days_diff = (actual_date - due_date).days
-                    self.parent.db.update_record(1, record_id, 'Контроль по дате ("-" - просрочка)', str(days_diff))
+                    # Инвертируем разницу и добавляем минус для просрочки
+                    days_diff = (due_date - actual_date).days
+                    self.parent.db.update_record(1, record_id, 
+                                            'Контроль по дате ("-" - просрочка)', 
+                                            str(-days_diff))  # Добавляем минус перед значением
 
             # Расчет контроля по оплате
             if edited_col in ['Цена ЗУ по договору, руб.', 'Оплачено']:
