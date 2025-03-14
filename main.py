@@ -159,6 +159,8 @@ class FileWindow(tk.Toplevel):
     def __init__(self, parent, file_type): 
         super().__init__(parent)
         self.parent = parent
+        self.transient(parent)  
+        self.grab_set()  
         self.file_type = file_type
         self.configure_ui()
         self.create_widgets()
@@ -175,7 +177,7 @@ class FileWindow(tk.Toplevel):
         self.style.configure("Yellow.Treeview", background="#ffffcc")
 
     def setup_tags(self):
-        self.tree.tag_configure('overdue', background='#ffcccc')
+        self.tree.tag_configure('overdue', background='#ffcccc')  
         self.tree.tag_configure('warning', background='#ffffcc')
 
     def create_widgets(self):
@@ -335,25 +337,26 @@ class FileWindow(tk.Toplevel):
     def create_new(self):
         try:
             expected = self.expected_columns[self.file_type]
+            default_data = {}
             
             # Создаем данные по умолчанию в соответствии с типом реестра
             if self.file_type == 1:
                 default_data = {
-                    'Номер договора': 0,
+                    'Номер договора': '',
                     'Дата заключения договора': datetime.now().strftime('%d.%m.%Y'),
-                    'Покупатель, ИНН': '',
-                    'Кадастровый номер ЗУ, адрес ЗУ': '',
-                    'Площадь ЗУ, кв. м': 0.0,
+                    'Покупатель, ИНН': 'ООО "Пример", ИНН 0000000000',
+                    'Кадастровый номер ЗУ, адрес ЗУ': '00:00:0000000:00, г. Пример',
+                    'Площадь ЗУ, кв. м': '',
                     'Разрешенное использование ЗУ': '',
-                    'Основание предоставления': '',
-                    'Цена ЗУ по договору, руб.': 0.0,
+                    'Основание предоставления': 'Номер ЗК РФ',
+                    'Цена ЗУ по договору, руб.': '0.00',
                     'Срок оплаты по договору': datetime.now().strftime('%d.%m.%Y'),
                     'Фактическая дата оплаты': '',
                     '№ выписки учета поступлений, № ПП': '',
-                    'Оплачено': 0.0,
+                    'Оплачено': '0,00',
                     'примечание': '',
-                    'начисленные ПЕНИ': 0.0,
-                    'оплачено пеней': 0.0,
+                    'начисленные ПЕНИ': '0,00',
+                    'оплачено пеней': '0,00',
                     'Дата выписки учета поступлений, № ПП': '',
                     'Возврат имеющейся переплаты': ''
                 }
@@ -402,7 +405,8 @@ class FileWindow(tk.Toplevel):
         
         for record in records:
             record_id = record[0]
-            values = ['' if v is None else str(v) for v in record[1:]]  # Конвертируем все значения в строки
+            values = ['' if v is None else str(v) for v in record[1:]]
+            tags = []
             
             # Инициализируем переменные значениями по умолчанию
             days_diff = 0
@@ -438,16 +442,33 @@ class FileWindow(tk.Toplevel):
                 while len(values) < 20:
                     values.append('')
             
-            tags = []
-            if days_diff < 0:
-                tags.append('overdue')
-            if payment_diff != 0:
-                tags.append('warning')
+            if self.file_type == 1:
+                # Индексы контрольных колонок
+                control_date_idx = 10  # Контроль по дате
+                control_payment_idx = 13 # Контроль по оплате
+                control_peni_idx = 17   # Неоплаченные пени
+                
+                try:
+                    # Проверяем каждую контрольную колонку
+                    for idx in [control_date_idx, control_payment_idx, control_peni_idx]:
+                        value = values[idx]
+                        if isinstance(value, str):
+                            value = value.strip().replace(' ', '')
+                            if value.startswith('-') and value != '-':
+                                tags.append('overdue')
+                        elif isinstance(value, (int, float)):
+                            if value < 0:
+                                tags.append('overdue')
+                except Exception as e:
+                    print(f"Ошибка при проверке подсветки: {e}")
             
-            self.tree.insert('', 'end', values=values, tags=(record_id,), iid=str(record_id))
+            self.tree.insert('', 'end', values=values, tags=(record_id, *tags), iid=str(record_id))
     
     def on_double_click(self, event):
         region = self.tree.identify_region(event.x, event.y)
+        edit_win = tk.Toplevel(self)  # Используем self вместо parent
+        edit_win.transient(self)      # Делаем окно зависимым
+        edit_win.grab_set()  
         if region != "cell":
             return
         
