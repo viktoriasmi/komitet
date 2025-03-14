@@ -1,4 +1,5 @@
 import tkinter as tk
+import math
 import os
 import sqlite3
 from tkinter import ttk, filedialog, messagebox
@@ -6,6 +7,8 @@ from datetime import datetime
 from dateutil.parser import parse
 import re
 import pandas as pd
+from tkcalendar import Calendar
+from datetime import timedelta  
 
 class DatabaseHandler:
     def __init__(self, db_name='registers.db'):
@@ -155,6 +158,23 @@ class FileWindow(tk.Toplevel):
         2: ['Номер', 'Территория', 'Стороны', 'Срок'],
         3: ['Номер', 'ЗУ', 'Заявитель', 'Период']
     }  
+    calculated_columns = {
+        1: [
+            'Контроль по дате ("-" - просрочка)',
+            'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
+            'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
+        ]
+    }
+    date_columns = {
+        1: [
+            'Дата заключения договора',
+            'Срок оплаты по договору',
+            'Фактическая дата оплаты',
+            'Дата выписки учета поступлений, № ПП'
+        ],
+        2: [],
+        3: []
+    }
     
     def __init__(self, parent, file_type): 
         super().__init__(parent)
@@ -280,6 +300,13 @@ class FileWindow(tk.Toplevel):
                     'начисленные ПЕНИ', 'оплачено пеней'],
                 2: [],
                 3: []
+            }
+            calculated_columns = {
+                1: [
+                    'Контроль по дате ("-" - просрочка)',
+                    'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
+                    'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
+                ]
             }
             for col in date_columns:
                 if col in df.columns:
@@ -464,11 +491,90 @@ class FileWindow(tk.Toplevel):
             
             self.tree.insert('', 'end', values=values, tags=(record_id, *tags), iid=str(record_id))
     
+    def create_calendar(self, parent, entry, col_name):
+        cal_win = tk.Toplevel(parent)
+        cal_win.title("Выбор даты")
+        
+        cal = Calendar(cal_win, 
+                    selectmode='day', 
+                    date_pattern='dd.mm.yyyy',
+                    locale='ru_RU')
+        cal.pack(padx=10, pady=10)
+
+        def set_date():
+            selected_date = cal.get_date()
+            if self.validate_date(selected_date):
+                entry.delete(0, tk.END)
+                entry.insert(0, selected_date)
+                cal_win.destroy()
+            else:
+                messagebox.showerror("Ошибка", "Некорректный формат даты")
+
+        ttk.Button(cal_win, 
+                text="Сохранить", 
+                command=set_date
+                ).pack(pady=5)
+
+
+    def save_edit(self, new_value, record_id, col_name, edit_win):
+        try:
+            self.parent.db.update_record(self.file_type, record_id, col_name, new_value)
+            
+            if self.file_type == 1:
+                self.update_calculations(record_id, col_name, new_value)
+            
+            self.update_treeview()
+            edit_win.destroy()
+            messagebox.showinfo("Успех", "Изменения сохранены!")
+        except Exception as e:
+            messagebox.showerror("Ошибка", str(e))
+
+    def update_calculations(self, record_id, edited_col, new_value):
+        cursor = self.parent.db.conn.cursor()
+        cursor.execute('SELECT * FROM contracts WHERE id = ?', (record_id,))
+        record = cursor.fetchone()
+
+        try:
+            # Обновление срока оплаты
+            if edited_col == 'Дата заключения договора':
+                contract_date = datetime.strptime(new_value, '%d.%m.%Y')
+                due_date = (contract_date + timedelta(days=7)).strftime('%d.%m.%Y')
+                self.parent.db.update_record(1, record_id, 'Срок оплаты по договору', due_date)
+                edited_col = 'Срок оплаты по договору'
+                new_value = due_date
+
+            # Расчет контроля по дате
+            if edited_col in ['Срок оплаты по договору', 'Фактическая дата оплаты']:
+                due_date_str = record[8] if edited_col != 'Срок оплаты по договору' else new_value
+                actual_date_str = record[9] if edited_col != 'Фактическая дата оплаты' else new_value
+                
+                if due_date_str and actual_date_str:
+                    due_date = datetime.strptime(due_date_str, '%d.%m.%Y')
+                    actual_date = datetime.strptime(actual_date_str, '%d.%m.%Y')
+                    days_diff = (actual_date - due_date).days
+                    self.parent.db.update_record(1, record_id, 'Контроль по дате ("-" - просрочка)', str(days_diff))
+
+            # Расчет контроля по оплате
+            if edited_col in ['Цена ЗУ по договору, руб.', 'Оплачено']:
+                price = float(record[7]) if edited_col != 'Цена ЗУ по договору, руб.' else float(new_value)
+                paid = float(record[12]) if edited_col != 'Оплачено' else float(new_value)
+                payment_diff = price - paid
+                self.parent.db.update_record(1, record_id, 
+                    'Контроль по оплате цены ("-" - переплата; "+" - недоплата)', f"{payment_diff:.2f}")
+
+            # Расчет неоплаченных пени
+            if edited_col in ['начисленные ПЕНИ', 'оплачено пеней']:
+                accrued = float(record[15]) if edited_col != 'начисленные ПЕНИ' else float(new_value)
+                paid_pen = float(record[16]) if edited_col != 'оплачено пеней' else float(new_value)
+                unpaid_pen = math.floor(accrued - paid_pen)
+                self.parent.db.update_record(1, record_id, 
+                    'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)', str(unpaid_pen))
+
+        except Exception as e:
+            print(f"Ошибка в расчетах: {e}")
+
     def on_double_click(self, event):
         region = self.tree.identify_region(event.x, event.y)
-        edit_win = tk.Toplevel(self)  # Используем self вместо parent
-        edit_win.transient(self)      # Делаем окно зависимым
-        edit_win.grab_set()  
         if region != "cell":
             return
         
@@ -478,46 +584,40 @@ class FileWindow(tk.Toplevel):
         col_index = int(column[1:]) - 1
         current_value = self.tree.item(item, 'values')[col_index]
         col_name = self.expected_columns[self.file_type][col_index]
-        
+
+        if col_name in self.calculated_columns.get(self.file_type, []):
+            messagebox.showinfo("Информация", "Это поле рассчитывается автоматически и не может быть изменено вручную.")
+            return
+
         edit_win = tk.Toplevel(self)
         edit_win.title("Редактирование")
-        edit_win.geometry("400x150")  # Увеличиваем размер окна
+        edit_win.geometry("400x150")
         
-        # Получаем ID записи из дерева
         record_id = self.tree.item(item, 'tags')[0] if self.tree.item(item, 'tags') else self.tree.item(item, 'iid')
-        
-        # Увеличиваем размер поля ввода
         entry = ttk.Entry(edit_win, font=('Arial', 12), width=30)
         entry.pack(padx=20, pady=20, fill='x', expand=True)
         entry.insert(0, current_value)
-        
+
+        if col_name in self.date_columns.get(self.file_type, []):
+            self.create_calendar(edit_win, entry, col_name)
+
+        btn_frame = ttk.Frame(edit_win)
+        btn_frame.pack(fill='x', padx=20, pady=10)
+
+        ttk.Button(btn_frame, 
+                 text="Сохранить", 
+                 command=lambda: self.save_edit(entry.get(), record_id, col_name, edit_win)
+                 ).pack(side='right')
+                 
+        ttk.Button(btn_frame, 
+                 text="Отмена", 
+                 command=edit_win.destroy
+                 ).pack(side='right', padx=5)
+
         # Добавляем валидацию для числовых полей
         if col_name in ['Цена ЗУ по договору, руб.', 'Оплачено', 'начисленные ПЕНИ', 'оплачено пеней']:
             validate_cmd = (edit_win.register(self.validate_number), '%P')
             entry.configure(validate='key', validatecommand=validate_cmd)
-        
-        def save_edit():
-            new_value = entry.get()
-            try:
-                # Используем правильный record_id
-                self.parent.db.update_record(
-                    file_type=self.file_type,
-                    record_id=record_id,  # Исправлено: используем корректный ID
-                    column=col_name,
-                    value=new_value
-                )
-                self.update_treeview()
-                edit_win.destroy()
-                messagebox.showinfo("Успех", "Изменения успешно сохранены!")
-            except Exception as e:
-                messagebox.showerror("Ошибка", str(e))
-        
-        # Увеличиваем размер кнопки
-        btn_frame = ttk.Frame(edit_win)
-        btn_frame.pack(fill='x', padx=20, pady=10)
-        
-        ttk.Button(btn_frame, text="Сохранить", command=save_edit, width=15).pack(side='right')
-        ttk.Button(btn_frame, text="Отмена", command=edit_win.destroy, width=15).pack(side='right', padx=5)
         
     def validate_number(self, value):
         return value == "" or value.isdigit()
