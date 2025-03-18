@@ -1,4 +1,6 @@
 import tkinter as tk
+import traceback
+import sys
 import math
 import os
 import sqlite3
@@ -9,6 +11,7 @@ import re
 import pandas as pd
 from tkcalendar import Calendar
 from datetime import timedelta  
+
 
 class DatabaseHandler:
     def __init__(self, db_name='registers.db'):
@@ -29,14 +32,11 @@ class DatabaseHandler:
                 '"Цена ЗУ по договору, руб." REAL',
                 '"Срок оплаты по договору" TEXT',
                 '"Фактическая дата оплаты" TEXT',
-                '"Контроль по дате (""-"" - просрочка)" TEXT',
                 '"№ выписки учета поступлений, № ПП" TEXT',
                 '"Оплачено" REAL',
-                '"Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" TEXT',
                 '"примечание" TEXT',
                 '"начисленные ПЕНИ" REAL',
                 '"оплачено пеней" REAL',
-                '"неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" TEXT',
                 '"Дата выписки учета поступлений, № ПП" TEXT',
                 '"Возврат имеющейся переплаты" TEXT'
             ],
@@ -55,11 +55,15 @@ class DatabaseHandler:
             3: 'permits'
         }[file_type]
     
-    def get_all_records(self, file_type):
+    def get_all_records(self, file_type, columns=None):
         table = self.get_table_name(file_type)
+        if columns:
+            columns_str = ', '.join([f'"{col}"' for col in columns])
+        else:
+            columns_str = '*'
         with self.conn:
             cursor = self.conn.cursor()
-            cursor.execute(f'SELECT * FROM {table}')
+            cursor.execute(f'SELECT {columns_str} FROM {table}')
             return cursor.fetchall()
     
     def update_record(self, file_type, record_id, column, value):
@@ -76,6 +80,9 @@ class DatabaseHandler:
     
     def import_from_dataframe(self, file_type, df):
         table = self.get_table_name(file_type)
+        if file_type == 1:
+            calculated = self.calculated_columns[file_type]
+            df = df.drop(columns=[c for c in calculated if c in df.columns])
         for col in df.columns:
             if pd.api.types.is_datetime64_any_dtype(df[col]):
                 df[col] = df[col].dt.strftime('%d.%m.%Y')
@@ -311,13 +318,18 @@ class FileWindow(tk.Toplevel):
                         'начисленные ПЕНИ', 'оплачено пеней']
             for col in money_columns:
                 if col in df.columns:
+                    # Сохраняем исходные значения как строки
+                    df[col] = df[col].astype(str)
+                    
+                    # Преобразуем с учетом разделителей тысяч и дробных частей
                     df[col] = (
-                        df[col].astype(str)
-                        .str.replace(r'[^\d,]', '', regex=True)
-                        .str.replace(r'\s+', '', regex=True)
+                        df[col].str.replace(r'[^\d,]', '', regex=True)
+                        .str.replace(r'\s+', '', regex=True)  # Удаляем пробелы
                         .str.replace(',', '.', regex=False)
                     )
-                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).round(2)
+                    # Конвертируем в float с округлением
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df[col] = df[col].round(2)
 
             # Обработка дат
             date_columns = self.date_columns.get(self.file_type, [])
@@ -402,69 +414,60 @@ class FileWindow(tk.Toplevel):
     
     def update_treeview(self):
         self.tree.delete(*self.tree.get_children())
-        records = self.parent.db.get_all_records(self.file_type)
+        # Получаем только необходимые колонки из БД
+        records = self.parent.db.get_all_records(
+            self.file_type, 
+            columns=self.expected_columns[self.file_type]
+        )
         
         for record in records:
-            record_id = record[0]
-            values = list(record[1:])
-            values = ['' if v is None else str(v) for v in values]
+            values = ['' if v is None else str(v) for v in record]
             tags = []
-            
-            # Инициализируем переменные значениями по умолчанию
-            days_diff = 0
-            payment_diff = 0
-            unpaid_pen = 0
+            calculated_values = {}
             
             try:
-                # Обработка дат
-                if values[8] and values[9]:  # Проверяем наличие дат
+                # Расчеты для вычисляемых полей
+                if self.file_type == 1:
+                    # Парсим даты
+                    contract_date = datetime.strptime(values[1], "%d.%m.%Y")
                     due_date = datetime.strptime(values[8], "%d.%m.%Y")
-                    actual_date = datetime.strptime(values[9], "%d.%m.%Y")    
-                    days_diff = (actual_date - due_date).days
-                
-                # Обработка числовых значений
-                price = float(values[7].replace(' ', '').replace(',', '.')) if values[7] else 0.0
-                paid = float(values[12].replace(' ', '').replace(',', '.')) if values[12] else 0.0
-                payment_diff = price - paid
-                
-                penalties = float(values[15].replace(' ', '').replace(',', '.')) if values[15] else 0.0
-                paid_pen = float(values[16].replace(' ', '').replace(',', '.')) if values[16] else 0.0
-                unpaid_pen = penalties - paid_pen
-                
-                # Вставляем вычисляемые поля
-                if len(values) >= 10:
-                    values.insert(10, days_diff)
-                if len(values) >= 14:
-                    values.insert(13, payment_diff)
-                if len(values) >= 18:
-                    values.insert(17, unpaid_pen)
+                    actual_date = datetime.strptime(values[9], "%d.%m.%Y") if values[9] else None
                     
+                    # Расчет просрочки
+                    days_diff = (actual_date - due_date).days if actual_date else 0
+                    calculated_values['Контроль по дате ("-" - просрочка)'] = days_diff
+                    
+                    # Расчет оплаты
+                    price = float(values[7])
+                    paid = float(values[12])
+                    payment_diff = price - paid
+                    calculated_values['Контроль по оплате цены ("-" - переплата; "+" - недоплата)'] = payment_diff
+                    
+                    # Расчет пеней
+                    accrued = float(values[15])
+                    paid_pen = float(values[16])
+                    unpaid_pen = accrued - paid_pen
+                    calculated_values['неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'] = unpaid_pen
+
+                    # Проверка условий подсветки
+                    if days_diff < 0:
+                        tags.append('overdue')
+                    if payment_diff != 0:
+                        tags.append('warning')
+
             except Exception as e:
-                # Добавляем недостающие значения
-                while len(values) < 20:
-                    values.append('')
+                print(f"Ошибка расчетов: {e}")
+
+            # Формируем финальные значения
+            final_values = []
+            for col in self.expected_columns[self.file_type]:
+                if col in self.calculated_columns.get(self.file_type, []):
+                    final_values.append(str(calculated_values.get(col, '')))
+                else:
+                    idx = self.expected_columns[self.file_type].index(col)
+                    final_values.append(values[idx] if idx < len(values) else '')
             
-            if self.file_type == 1:
-                # Индексы контрольных колонок
-                control_date_idx = 10
-                control_payment_idx = 13
-                control_peni_idx = 17
-                
-                try:
-                    for idx in [control_date_idx, control_payment_idx, control_peni_idx]:
-                        value = values[idx]
-                        if isinstance(value, str):
-                            value = value.strip().replace(' ', '')
-                            if value.startswith('-') and value != '-':
-                                tags.append('overdue')
-                        elif isinstance(value, (int, float)):
-                            # Изменяем условие для отрицательных значений
-                            if float(value) < 0:
-                                tags.append('overdue')
-                except Exception as e:
-                    print(f"Ошибка при проверке подсветки: {e}")
-            
-            self.tree.insert('', 'end', values=values, tags=(record_id, *tags), iid=str(record_id))
+            self.tree.insert('', 'end', values=final_values, tags=tags)
     
     def create_calendar(self, parent, entry, col_name):
         cal_win = tk.Toplevel(parent)
@@ -609,12 +612,12 @@ class FileWindow(tk.Toplevel):
         try:
             df = self.parent.db.export_to_dataframe(self.file_type)
             df = df.drop(columns=['id'])
-            
+
             file_path = filedialog.asksaveasfilename(
                 defaultextension=".xlsx",
                 filetypes=[("Excel files", "*.xlsx")]
             )
-            
+
             if not file_path:
                 return
             
@@ -622,6 +625,21 @@ class FileWindow(tk.Toplevel):
                 backup_name = f"{file_path}_backup_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx"
                 os.rename(file_path, backup_name)
             
+            if self.file_type == 1:
+                # Добавляем вычисляемые поля
+                df['Контроль по дате ("-" - просрочка)'] = df.apply(
+                    lambda row: (parse(row['Фактическая дата оплаты']) - parse(row['Срок оплаты по договору'])).days
+                    if row['Фактическая дата оплаты'] and row['Срок оплаты по договору'] else '', axis=1
+                )
+                
+                df['Контроль по оплате цены ("-" - переплата; "+" - недоплата)'] = df.apply(
+                    lambda row: float(row['Цена ЗУ по договору, руб.']) - float(row['Оплачено']), axis=1
+                )
+                
+                df['неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'] = df.apply(
+                    lambda row: float(row['начисленные ПЕНИ']) - float(row['оплачено пеней']), axis=1
+                )
+
             df.to_excel(file_path, index=False, engine='openpyxl')
             messagebox.showinfo("Успех", "Файл успешно сохранен!")
             
