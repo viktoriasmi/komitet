@@ -76,16 +76,18 @@ class DatabaseHandler:
     
     def import_from_dataframe(self, file_type, df):
         table = self.get_table_name(file_type)
-        for col in df.columns:
-            if pd.api.types.is_datetime64_any_dtype(df[col]):
-                df[col] = df[col].dt.strftime('%d.%m.%Y')
-        # Экранируем двойные кавычки внутри названий колонок
+        
+        # Экранирование кавычек в названиях колонок
         columns = [f'"{col.replace("\"", "\"\"")}"' for col in df.columns.tolist()]
         placeholders = ', '.join(['?'] * len(columns))
         
         with self.conn:
             cursor = self.conn.cursor()
             try:
+                # Удаляем старые данные
+                cursor.execute(f'DELETE FROM {table}')
+                
+                # Вставляем новые данные
                 cursor.executemany(
                     f'''INSERT INTO {table} ({', '.join(columns)})
                         VALUES ({placeholders})''',
@@ -94,7 +96,7 @@ class DatabaseHandler:
             except sqlite3.Error as e:
                 print("SQL error:", e)
                 raise
-    
+        
     def export_to_dataframe(self, file_type):
         table = self.get_table_name(file_type)
         with self.conn:
@@ -274,89 +276,66 @@ class FileWindow(tk.Toplevel):
         file_path = filedialog.askopenfilename(
             parent=self,
             title="Выберите файл",
-            filetypes=[
-                ("Excel files", "*.xls;*.xlsx;*.xlsm"),  
-                ("All files", "*.*")
-            ]
+            filetypes=[("Excel files", "*.xls;*.xlsx;*.xlsm")]
         )
         if not file_path:
             return
         
         try:
-            # 2. Определение движка для чтения Excel
-            if file_path.endswith(('.xls', '.xlm')):
-                df = pd.read_excel(file_path, engine='xlrd')
-            elif file_path.endswith(('.xlsx', '.xlsm')):
-                df = pd.read_excel(file_path, engine='openpyxl')
-            else:
-                raise ValueError("Неподдерживаемый формат файла")
-            # Преобразование дат из строк в datetime и обратно в строку
-            date_columns = {
-                1: ['Дата заключения договора', 'Срок оплаты по договору', 
-                    'Фактическая дата оплаты', 'Дата выписки учета поступлений, № ПП'],
-                2: [],
-                3: []
-            }
-            numeric_columns = {
-                1: ['Цена ЗУ по договору, руб.', 'Оплачено', 
-                    'начисленные ПЕНИ', 'оплачено пеней'],
-                2: [],
-                3: []
-            }
-            calculated_columns = {
-                1: [
-                    'Контроль по дате ("-" - просрочка)',
-                    'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
-                    'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
-                ]
-            }
-            for col in date_columns:
-                if col in df.columns:
-                    # Преобразуем в datetime с учетом формата день.месяц.год
-                    df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
-                    # Конвертируем обратно в строку с нужным форматом
-                    df[col] = df[col].dt.strftime('%d.%m.%Y')
-                    
-            # Дальнейшая обработка колонок (остается без изменений)
+            # Чтение файла
+            engine = 'xlrd' if file_path.endswith(('.xls', '.xlm')) else 'openpyxl'
+            df = pd.read_excel(file_path, engine=engine)
+
+            # Приведение названий колонок к стандартному формату
             df.columns = (
                 df.columns.str.strip()
                 .str.replace(r'\s+', ' ', regex=True)
                 .str.replace(r'[“”„"]', '', regex=True)
-                .str.replace('("-" -', '("-" -')
             )
 
-            column_mapping = {
-                'Контроль по дате (- - просрочка)': 'Контроль по дате ("-" - просрочка)',
-                'Контроль по оплате цены (- переплата; + - недоплата)': 
-                    'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
-                'неоплаченные ПЕНИ (+ - недоплата; - переплата)': 
-                    'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
-            }
-            df.rename(columns=column_mapping, inplace=True)
-
+            # Явное указание порядка колонок
             expected = self.expected_columns[self.file_type]
-            df = df.loc[:, ~df.columns.duplicated()]
             df = df.reindex(columns=expected)
 
-            money_columns = ['Цена ЗУ по договору, руб.', 'Оплачено', 'начисленные ПЕНИ', 'оплачено пеней']
-            for col in money_columns:
+            # Обработка числовых полей
+            numeric_columns = {
+                1: [
+                    'Площадь ЗУ, кв. м',
+                    'Цена ЗУ по договору, руб.',
+                    'Оплачено',
+                    'начисленные ПЕНИ',
+                    'оплачено пеней'
+                ]
+            }.get(self.file_type, [])
+            
+            for col in numeric_columns:
                 if col in df.columns:
                     df[col] = (
                         df[col].astype(str)
-                        .str.replace(r'[^\d,.]', '', regex=True)
+                        .str.replace(r'\s+', '', regex=True)
                         .str.replace(',', '.')
+                        .apply(pd.to_numeric, errors='coerce')
                     )
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                    df[col] = df[col].fillna(0.0)
 
-            if list(df.columns) != expected:
-                mismatch = list(set(expected) - set(df.columns)) + list(set(df.columns) - set(expected))
-                messagebox.showerror(
-                    "Ошибка", 
-                    f"Несовпадение колонок:\n{', '.join(mismatch)}"
-                )
-                return
+            # Обработка дат
+            date_columns = {
+                1: [
+                    'Дата заключения договора',
+                    'Срок оплаты по договору',
+                    'Фактическая дата оплаты',
+                    'Дата выписки учета поступлений, № ПП'
+                ]
+            }.get(self.file_type, [])
+            
+            for col in date_columns:
+                if col in df.columns:
+                    df[col] = pd.to_datetime(
+                        df[col], 
+                        dayfirst=True, 
+                        errors='coerce'
+                    ).dt.strftime('%d.%m.%Y')
 
+            # Импорт в БД
             self.parent.db.import_from_dataframe(self.file_type, df)
             self.update_treeview()
             
