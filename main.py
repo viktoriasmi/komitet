@@ -76,18 +76,16 @@ class DatabaseHandler:
     
     def import_from_dataframe(self, file_type, df):
         table = self.get_table_name(file_type)
-        
-        # Экранирование кавычек в названиях колонок
+        for col in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                df[col] = df[col].dt.strftime('%d.%m.%Y')
+        # Экранируем двойные кавычки внутри названий колонок
         columns = [f'"{col.replace("\"", "\"\"")}"' for col in df.columns.tolist()]
         placeholders = ', '.join(['?'] * len(columns))
-        
+        df = df.where(pd.notnull(df), None) 
         with self.conn:
             cursor = self.conn.cursor()
             try:
-                # Удаляем старые данные
-                cursor.execute(f'DELETE FROM {table}')
-                
-                # Вставляем новые данные
                 cursor.executemany(
                     f'''INSERT INTO {table} ({', '.join(columns)})
                         VALUES ({placeholders})''',
@@ -96,7 +94,7 @@ class DatabaseHandler:
             except sqlite3.Error as e:
                 print("SQL error:", e)
                 raise
-        
+    
     def export_to_dataframe(self, file_type):
         table = self.get_table_name(file_type)
         with self.conn:
@@ -276,71 +274,66 @@ class FileWindow(tk.Toplevel):
         file_path = filedialog.askopenfilename(
             parent=self,
             title="Выберите файл",
-            filetypes=[("Excel files", "*.xls;*.xlsx;*.xlsm")]
+            filetypes=[
+                ("Excel files", "*.xls;*.xlsx;*.xlsm"),  
+                ("All files", "*.*")
+            ]
         )
         if not file_path:
             return
         
         try:
-            # Чтение файла
-            engine = 'xlrd' if file_path.endswith(('.xls', '.xlm')) else 'openpyxl'
-            df = pd.read_excel(file_path, engine=engine)
+            # Чтение Excel с правильным движком
+            if file_path.endswith(('.xls', '.xlm')):
+                df = pd.read_excel(file_path, engine='xlrd')
+            else:
+                df = pd.read_excel(file_path, engine='openpyxl')
 
-            # Приведение названий колонок к стандартному формату
-            df.columns = (
-                df.columns.str.strip()
-                .str.replace(r'\s+', ' ', regex=True)
-                .str.replace(r'[“”„"]', '', regex=True)
-            )
+            # Предварительная обработка данных
+            df.columns = df.columns.str.strip().str.normalize('NFKC')
 
-            # Явное указание порядка колонок
+            # Переименование колонок
+            column_mapping = {
+                'кадастровый номер': 'Кадастровый номер ЗУ, адрес ЗУ',
+                # ... другие необходимые замены
+            }
+            df.rename(columns=column_mapping, inplace=True)
+
+            # Гарантируем наличие всех колонок
             expected = self.expected_columns[self.file_type]
-            df = df.reindex(columns=expected)
+            for col in expected:
+                if col not in df.columns:
+                    df[col] = None
+            df = df[expected]
 
             # Обработка числовых полей
-            numeric_columns = {
-                1: [
-                    'Площадь ЗУ, кв. м',
-                    'Цена ЗУ по договору, руб.',
-                    'Оплачено',
-                    'начисленные ПЕНИ',
-                    'оплачено пеней'
-                ]
-            }.get(self.file_type, [])
-            
-            for col in numeric_columns:
+            money_columns = ['Цена ЗУ по договору, руб.', 'Оплачено', 
+                        'начисленные ПЕНИ', 'оплачено пеней']
+            for col in money_columns:
                 if col in df.columns:
                     df[col] = (
                         df[col].astype(str)
+                        .str.replace(r'[^\d,]', '', regex=True)
                         .str.replace(r'\s+', '', regex=True)
-                        .str.replace(',', '.')
-                        .apply(pd.to_numeric, errors='coerce')
+                        .str.replace(',', '.', regex=False)
                     )
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).round(2)
 
             # Обработка дат
-            date_columns = {
-                1: [
-                    'Дата заключения договора',
-                    'Срок оплаты по договору',
-                    'Фактическая дата оплаты',
-                    'Дата выписки учета поступлений, № ПП'
-                ]
-            }.get(self.file_type, [])
-            
+            date_columns = self.date_columns.get(self.file_type, [])
             for col in date_columns:
                 if col in df.columns:
-                    df[col] = pd.to_datetime(
-                        df[col], 
-                        dayfirst=True, 
-                        errors='coerce'
-                    ).dt.strftime('%d.%m.%Y')
+                    df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce').dt.strftime('%d.%m.%Y')
 
-            # Импорт в БД
+            # Замена NaN на None для SQL
+            df = df.where(pd.notnull(df), None)
+
+            # Импорт в базу
             self.parent.db.import_from_dataframe(self.file_type, df)
             self.update_treeview()
             
         except Exception as e:
-            messagebox.showerror("Ошибка", f"Ошибка обработки данных: {str(e)}")
+            messagebox.showerror("Ошибка", f"Ошибка обработки данных: {str(e)}\n\nТрассировка:\n{traceback.format_exc()}")
     
     def create_new(self):
         try:
@@ -413,7 +406,8 @@ class FileWindow(tk.Toplevel):
         
         for record in records:
             record_id = record[0]
-            values = ['' if v is None else str(v) for v in record[1:]]
+            values = list(record[1:])
+            values = ['' if v is None else str(v) for v in values]
             tags = []
             
             # Инициализируем переменные значениями по умолчанию
@@ -532,12 +526,10 @@ class FileWindow(tk.Toplevel):
                 if due_date_str and actual_date_str:
                     due_date = datetime.strptime(due_date_str, '%d.%m.%Y')
                     actual_date = datetime.strptime(actual_date_str, '%d.%m.%Y')
-                    # Инвертируем разницу и добавляем минус для просрочки
-                    days_diff = (due_date - actual_date).days
+                    days_diff = (actual_date - due_date).days  # Правильный порядок вычитания
                     self.parent.db.update_record(1, record_id, 
-                                            'Контроль по дате ("-" - просрочка)', 
-                                            str(-days_diff))  # Добавляем минус перед значением
-
+                                                'Контроль по дате ("-" - просрочка)', 
+                                                str(days_diff))  # Убираем инверсию знака
             # Расчет контроля по оплате
             if edited_col in ['Цена ЗУ по договору, руб.', 'Оплачено']:
                 price = float(record[7]) if edited_col != 'Цена ЗУ по договору, руб.' else float(new_value)
