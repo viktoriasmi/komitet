@@ -324,29 +324,32 @@ class FileWindow(tk.Toplevel):
                 # ... другие необходимые замены
             }
             df.rename(columns=column_mapping, inplace=True)
+            print("Фактические колонки в файле:", df.columns.tolist())
+            print("Ожидаемые колонки:", self.expected_columns[self.file_type])
 
-            # Гарантируем наличие всех колонок
-            expected = self.expected_columns[self.file_type]
-            for col in expected:
+            # Выравнивание колонок
+            for col in self.expected_columns[self.file_type]:
                 if col not in df.columns:
                     df[col] = None
-            df = df[expected]
+            df = df[self.expected_columns[self.file_type]]
 
             # Обработка числовых полей
             money_columns = ['Цена ЗУ по договору, руб.', 'Оплачено', 
-                        'начисленные ПЕНИ', 'оплачено пеней']
+                    'начисленные ПЕНИ', 'оплачено пеней']
+    
             for col in money_columns:
                 if col in df.columns:
                     # Сохраняем исходные значения как строки
                     df[col] = df[col].astype(str)
                     
-                    # Преобразуем с учетом разделителей тысяч и дробных частей
-                    df[col] = (
-                        df[col].str.replace(r'[^\d,]', '', regex=True)
-                        .str.replace(r'\s+', '', regex=True)  # Удаляем пробелы
-                        .str.replace(',', '.', regex=False)
-                    )
-                    # Конвертируем в float с округлением
+                    # Удаляем все нецифровые символы кроме запятых и точек
+                    df[col] = df[col].str.replace(r'[^\d,\.]', '', regex=True)
+                    
+                    # Заменяем запятые на точки и удаляем пробелы
+                    df[col] = df[col].str.replace(',', '.', regex=False)
+                    df[col] = df[col].str.replace(r'\s+', '', regex=True)
+                    
+                    # Конвертируем в float с обработкой ошибок
                     df[col] = pd.to_numeric(df[col], errors='coerce')
                     df[col] = df[col].round(2)
 
@@ -358,6 +361,11 @@ class FileWindow(tk.Toplevel):
 
             # Замена NaN на None для SQL
             df = df.where(pd.notnull(df), None)
+
+            text_columns = ['примечание', '№ выписки учета поступлений, № ПП']
+            for col in text_columns:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.strip()
 
             # Импорт в базу
             self.parent.db.import_from_dataframe(self.file_type, df)
@@ -437,42 +445,28 @@ class FileWindow(tk.Toplevel):
         
         for record in records:
             record_id = record[0]
-            values = list(record[1:])
-            values = ['' if v is None else str(v) for v in values]
+            record_dict = dict(zip(self.expected_columns[self.file_type], record[1:]))
             tags = []
             calculated_values = {}
 
             try:
                 if self.file_type == 1:
-                    # Получаем индексы колонок динамически
-                    due_date_idx = self.expected_columns[self.file_type].index('Срок оплаты по договору')
-                    actual_date_idx = self.expected_columns[self.file_type].index('Фактическая дата оплаты')
-                    price_idx = self.expected_columns[self.file_type].index('Цена ЗУ по договору, руб.')
-                    paid_idx = self.expected_columns[self.file_type].index('Оплачено')
-                    accrued_idx = self.expected_columns[self.file_type].index('начисленные ПЕНИ')
-                    paid_pen_idx = self.expected_columns[self.file_type].index('оплачено пеней')
-
-                    # Парсим даты с проверкой на пустые значения
-                    due_date_str = values[due_date_idx]
-                    actual_date_str = values[actual_date_idx]
-                    days_diff = 0
+                    # Получаем значения из словаря
+                    due_date_str = record_dict.get('Срок оплаты по договору', '')
+                    actual_date_str = record_dict.get('Фактическая дата оплаты', '')
                     
+                    # Парсим даты
+                    days_diff = 0
                     if due_date_str and actual_date_str:
                         due_date = datetime.strptime(due_date_str, "%d.%m.%Y")
                         actual_date = datetime.strptime(actual_date_str, "%d.%m.%Y")
                         days_diff = (actual_date - due_date).days
 
-                    # Обработка числовых значений с заменой разделителей
-                    price_str = values[price_idx].replace(' ', '').replace(',', '.') if values[price_idx] else '0'
-                    paid_str = values[paid_idx].replace(' ', '').replace(',', '.') if values[paid_idx] else '0'
-                    accrued_str = values[accrued_idx].replace(' ', '').replace(',', '.') if values[accrued_idx] else '0'
-                    paid_pen_str = values[paid_pen_idx].replace(' ', '').replace(',', '.') if values[paid_pen_idx] else '0'
-
-                    # Преобразуем в float с обработкой ошибок
-                    price = float(price_str) if price_str else 0.0
-                    paid = float(paid_str) if paid_str else 0.0
-                    accrued = float(accrued_str) if accrued_str else 0.0
-                    paid_pen = float(paid_pen_str) if paid_pen_str else 0.0
+                    # Получаем и преобразуем числовые значения
+                    price = float(record_dict.get('Цена ЗУ по договору, руб.', 0))
+                    paid = float(record_dict.get('Оплачено', 0))
+                    accrued = float(record_dict.get('начисленные ПЕНИ', 0))
+                    paid_pen = float(record_dict.get('оплачено пеней', 0))
 
                     # Расчет значений
                     payment_diff = price - paid
@@ -493,14 +487,31 @@ class FileWindow(tk.Toplevel):
             except Exception as e:
                 print(f"Ошибка расчетов: {e}")
 
-            # Остальная часть функции остается без изменений
+            # Формируем финальные значения
             final_values = []
             for col in self.expected_columns[self.file_type]:
                 if col in calculated_values:
-                    final_values.append(str(calculated_values[col]))
+                    # Форматируем числовые значения
+                    value = calculated_values[col]
+                    if isinstance(value, float):
+                        final_values.append(f"{value:.2f}".replace('.', ','))
+                    else:
+                        final_values.append(str(value))
                 else:
-                    idx = self.expected_columns[self.file_type].index(col)
-                    final_values.append(values[idx] if idx < len(values) else '')
+                    # Берем значение из записи и обрабатываем пустые значения
+                    value = record_dict.get(col, '')
+                    if value is None:
+                        final_values.append('')
+                    else:
+                        # Для числовых полей добавляем форматирование
+                        if col in ['Цена ЗУ по договору, руб.', 'Оплачено', 
+                                'начисленные ПЕНИ', 'оплачено пеней']:
+                            try:
+                                final_values.append(f"{float(value):,.2f}".replace(',', ' ').replace('.', ','))
+                            except:
+                                final_values.append(str(value))
+                        else:
+                            final_values.append(str(value))
             
             self.tree.insert('', 'end', values=final_values, tags=tags)
     
@@ -667,10 +678,17 @@ class FileWindow(tk.Toplevel):
                 os.rename(file_path, backup_name)
 
             if self.file_type == 1:
-                # Преобразуем строки в числа
-                df['Цена ЗУ по договору, руб.'] = df['Цена ЗУ по договору, руб.'].astype(str).str.replace(r'[^\d.,]', '', regex=True).astype(float)
-                df['Оплачено'] = df['Оплачено'].astype(str).str.replace(r'[^\d.,]', '', regex=True).astype(float)   
+                # Форматирование числовых колонок
+                num_cols = ['Цена ЗУ по договору, руб.', 'Оплачено', 
+                        'начисленные ПЕНИ', 'оплачено пеней']
+                for col in num_cols:
+                    df[col] = df[col].apply(lambda x: f"{x:,.2f}".replace(',', ' ').replace('.', ',') if pd.notnull(x) else '')
                 
+                # Форматирование дат
+                date_cols = ['Дата заключения договора', 'Срок оплаты по договору',
+                            'Фактическая дата оплаты', 'Дата выписки учета поступлений, № ПП']
+                for col in date_cols:
+                    df[col] = pd.to_datetime(df[col]).dt.strftime('%d.%m.%Y')    
                 # Применяем расчеты
                 df['Контроль по дате ("-" - просрочка)'] = df.apply(self.calculate_days_diff, axis=1)
                 df['Контроль по оплате цены ("-" - переплата; "+" - недоплата)'] = df.apply(self.calculate_payment_diff, axis=1)
