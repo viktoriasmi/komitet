@@ -12,10 +12,16 @@ import pandas as pd
 from tkcalendar import Calendar
 from datetime import timedelta  
 
-
 class DatabaseHandler:
     def __init__(self, db_name='registers.db'):
         self.conn = sqlite3.connect(db_name)
+        self.calculated_columns = {
+        1: [
+            'Контроль по дате ("-" - просрочка)',
+            'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
+            'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
+        ]
+        }
         self.create_tables()
         
     def create_tables(self):
@@ -47,7 +53,7 @@ class DatabaseHandler:
             for table_name, columns in tables.items():
                 columns_str = ', '.join(columns)
                 cursor.execute(f'CREATE TABLE IF NOT EXISTS {table_name} ({columns_str})')
-    
+
     def get_table_name(self, file_type):
         return {
             1: 'contracts',
@@ -167,13 +173,6 @@ class FileWindow(tk.Toplevel):
         2: ['Номер', 'Территория', 'Стороны', 'Срок'],
         3: ['Номер', 'ЗУ', 'Заявитель', 'Период']
     }  
-    calculated_columns = {
-        1: [
-            'Контроль по дате ("-" - просрочка)',
-            'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
-            'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
-        ]
-    }
     date_columns = {
         1: [
             'Дата заключения договора',
@@ -198,6 +197,26 @@ class FileWindow(tk.Toplevel):
         self.setup_tags()
         self.state('zoomed')  
     
+    def calculate_days_diff(self, row):
+        try:
+            due_date = datetime.strptime(row['Срок оплаты по договору'], "%d.%m.%Y")
+            actual_date = datetime.strptime(row['Фактическая дата оплаты'], "%d.%m.%Y")
+            return (actual_date - due_date).days
+        except:
+            return 0
+
+    def calculate_payment_diff(self, row):
+        try:
+            return float(row['Цена ЗУ по договору, руб.']) - float(row['Оплачено'])
+        except:
+            return 0
+
+    def calculate_peni_diff(self, row):
+        try:
+            return float(row['начисленные ПЕНИ']) - float(row['оплачено пеней'])
+        except:
+            return 0
+
     def configure_ui(self):
         self.title(f"Реестр типа {self.file_type}")
         self.geometry("1400x800")
@@ -414,40 +433,56 @@ class FileWindow(tk.Toplevel):
     
     def update_treeview(self):
         self.tree.delete(*self.tree.get_children())
-        # Получаем только необходимые колонки из БД
-        records = self.parent.db.get_all_records(
-            self.file_type, 
-            columns=self.expected_columns[self.file_type]
-        )
+        records = self.parent.db.get_all_records(self.file_type)
         
         for record in records:
-            values = ['' if v is None else str(v) for v in record]
+            record_id = record[0]
+            values = list(record[1:])
+            values = ['' if v is None else str(v) for v in values]
             tags = []
             calculated_values = {}
-            
+
             try:
-                # Расчеты для вычисляемых полей
                 if self.file_type == 1:
-                    # Парсим даты
-                    contract_date = datetime.strptime(values[1], "%d.%m.%Y")
-                    due_date = datetime.strptime(values[8], "%d.%m.%Y")
-                    actual_date = datetime.strptime(values[9], "%d.%m.%Y") if values[9] else None
+                    # Получаем индексы колонок динамически
+                    due_date_idx = self.expected_columns[self.file_type].index('Срок оплаты по договору')
+                    actual_date_idx = self.expected_columns[self.file_type].index('Фактическая дата оплаты')
+                    price_idx = self.expected_columns[self.file_type].index('Цена ЗУ по договору, руб.')
+                    paid_idx = self.expected_columns[self.file_type].index('Оплачено')
+                    accrued_idx = self.expected_columns[self.file_type].index('начисленные ПЕНИ')
+                    paid_pen_idx = self.expected_columns[self.file_type].index('оплачено пеней')
+
+                    # Парсим даты с проверкой на пустые значения
+                    due_date_str = values[due_date_idx]
+                    actual_date_str = values[actual_date_idx]
+                    days_diff = 0
                     
-                    # Расчет просрочки
-                    days_diff = (actual_date - due_date).days if actual_date else 0
-                    calculated_values['Контроль по дате ("-" - просрочка)'] = days_diff
-                    
-                    # Расчет оплаты
-                    price = float(values[7])
-                    paid = float(values[12])
+                    if due_date_str and actual_date_str:
+                        due_date = datetime.strptime(due_date_str, "%d.%m.%Y")
+                        actual_date = datetime.strptime(actual_date_str, "%d.%m.%Y")
+                        days_diff = (actual_date - due_date).days
+
+                    # Обработка числовых значений с заменой разделителей
+                    price_str = values[price_idx].replace(' ', '').replace(',', '.') if values[price_idx] else '0'
+                    paid_str = values[paid_idx].replace(' ', '').replace(',', '.') if values[paid_idx] else '0'
+                    accrued_str = values[accrued_idx].replace(' ', '').replace(',', '.') if values[accrued_idx] else '0'
+                    paid_pen_str = values[paid_pen_idx].replace(' ', '').replace(',', '.') if values[paid_pen_idx] else '0'
+
+                    # Преобразуем в float с обработкой ошибок
+                    price = float(price_str) if price_str else 0.0
+                    paid = float(paid_str) if paid_str else 0.0
+                    accrued = float(accrued_str) if accrued_str else 0.0
+                    paid_pen = float(paid_pen_str) if paid_pen_str else 0.0
+
+                    # Расчет значений
                     payment_diff = price - paid
-                    calculated_values['Контроль по оплате цены ("-" - переплата; "+" - недоплата)'] = payment_diff
-                    
-                    # Расчет пеней
-                    accrued = float(values[15])
-                    paid_pen = float(values[16])
                     unpaid_pen = accrued - paid_pen
-                    calculated_values['неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'] = unpaid_pen
+
+                    calculated_values = {
+                        'Контроль по дате ("-" - просрочка)': days_diff,
+                        'Контроль по оплате цены ("-" - переплата; "+" - недоплата)': payment_diff,
+                        'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)': unpaid_pen
+                    }
 
                     # Проверка условий подсветки
                     if days_diff < 0:
@@ -458,17 +493,18 @@ class FileWindow(tk.Toplevel):
             except Exception as e:
                 print(f"Ошибка расчетов: {e}")
 
-            # Формируем финальные значения
+            # Остальная часть функции остается без изменений
             final_values = []
             for col in self.expected_columns[self.file_type]:
-                if col in self.calculated_columns.get(self.file_type, []):
-                    final_values.append(str(calculated_values.get(col, '')))
+                if col in calculated_values:
+                    final_values.append(str(calculated_values[col]))
                 else:
                     idx = self.expected_columns[self.file_type].index(col)
                     final_values.append(values[idx] if idx < len(values) else '')
             
             self.tree.insert('', 'end', values=final_values, tags=tags)
     
+
     def create_calendar(self, parent, entry, col_name):
         cal_win = tk.Toplevel(parent)
         cal_win.title("Выбор даты")
@@ -564,7 +600,7 @@ class FileWindow(tk.Toplevel):
         current_value = self.tree.item(item, 'values')[col_index]
         col_name = self.expected_columns[self.file_type][col_index]
 
-        if col_name in self.calculated_columns.get(self.file_type, []):
+        if col_name in self.parent.db.calculated_columns.get(self.file_type, []):
             messagebox.showinfo("Информация", "Это поле рассчитывается автоматически и не может быть изменено вручную.")
             return
 
@@ -599,7 +635,12 @@ class FileWindow(tk.Toplevel):
             entry.configure(validate='key', validatecommand=validate_cmd)
         
     def validate_number(self, value):
-        return value == "" or value.isdigit()
+        try:
+            if value.strip() == "": return True
+            float(value.replace(',', '.'))
+            return True
+        except:
+            return False
 
     def show_calendar_dialog(self, parent_entry, field_name):
         cal = simpledialog.askstring("Ввод даты", 
@@ -624,21 +665,16 @@ class FileWindow(tk.Toplevel):
             if os.path.exists(file_path):
                 backup_name = f"{file_path}_backup_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx"
                 os.rename(file_path, backup_name)
-            
+
             if self.file_type == 1:
-                # Добавляем вычисляемые поля
-                df['Контроль по дате ("-" - просрочка)'] = df.apply(
-                    lambda row: (parse(row['Фактическая дата оплаты']) - parse(row['Срок оплаты по договору'])).days
-                    if row['Фактическая дата оплаты'] and row['Срок оплаты по договору'] else '', axis=1
-                )
+                # Преобразуем строки в числа
+                df['Цена ЗУ по договору, руб.'] = df['Цена ЗУ по договору, руб.'].astype(str).str.replace(r'[^\d.,]', '', regex=True).astype(float)
+                df['Оплачено'] = df['Оплачено'].astype(str).str.replace(r'[^\d.,]', '', regex=True).astype(float)   
                 
-                df['Контроль по оплате цены ("-" - переплата; "+" - недоплата)'] = df.apply(
-                    lambda row: float(row['Цена ЗУ по договору, руб.']) - float(row['Оплачено']), axis=1
-                )
-                
-                df['неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'] = df.apply(
-                    lambda row: float(row['начисленные ПЕНИ']) - float(row['оплачено пеней']), axis=1
-                )
+                # Применяем расчеты
+                df['Контроль по дате ("-" - просрочка)'] = df.apply(self.calculate_days_diff, axis=1)
+                df['Контроль по оплате цены ("-" - переплата; "+" - недоплата)'] = df.apply(self.calculate_payment_diff, axis=1)
+                df['неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'] = df.apply(self.calculate_peni_diff, axis=1)
 
             df.to_excel(file_path, index=False, engine='openpyxl')
             messagebox.showinfo("Успех", "Файл успешно сохранен!")
