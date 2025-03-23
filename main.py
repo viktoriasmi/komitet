@@ -309,7 +309,7 @@ class FileWindow(tk.Toplevel):
             return
         
         try:
-            # Определяем типы колонок для чтения как строки
+            # Указываем явные типы для текстовых колонок
             dtype_spec = {
                 '№ выписки учета поступлений, № ПП': str,
                 'примечание': str,
@@ -317,68 +317,83 @@ class FileWindow(tk.Toplevel):
                 'Покупатель, ИНН': str,
                 'Основание предоставления': str,
                 'Разрешенное использование ЗУ': str,
+                'Номер договора': str
             }
 
-            # Чтение Excel с указанием типов колонок
-            if file_path.endswith(('.xls', '.xlm')):
-                df = pd.read_excel(file_path, engine='xlrd', dtype=dtype_spec)
+            # Чтение с указанием формата дат и типов
+            if file_path.endswith(('.xls', '.xlsx')):
+                df = pd.read_excel(
+                    file_path, 
+                    engine='openpyxl',
+                    dtype=dtype_spec,
+                    date_parser=lambda x: pd.to_datetime(x, dayfirst=True, errors='coerce')
+                )
             else:
-                df = pd.read_excel(file_path, engine='openpyxl', dtype=dtype_spec)
+                df = pd.read_excel(
+                    file_path, 
+                    engine='xlrd',
+                    dtype=dtype_spec,
+                    date_parser=lambda x: pd.to_datetime(x, dayfirst=True, errors='coerce')
+                )
 
             # Нормализация названий колонок
             df.columns = (
                 df.columns.str.strip()
                 .str.normalize('NFKC')
-                .str.replace(r'\s+', ' ', regex=True)  # Удаляем лишние пробелы
+                .str.replace(r'\s+', ' ', regex=True)
+                .str.replace(r'["\']', '', regex=True)  # Удаляем кавычки
             )
 
-            # Переименование колонок для соответствия ожидаемым
+            # Точное сопоставление колонок
             column_mapping = {
-                'кадастровый номер': 'Кадастровый номер ЗУ, адрес ЗУ',
-                'площадь зу, кв. м': 'Площадь ЗУ, кв. м',
-                'пп.6 п.2 ст. 39.3, ст. 39.17, ст. 39.20 зк рф': 'Основание предоставления',
+                'кадастровый номер зу адрес зу': 'Кадастровый номер ЗУ, адрес ЗУ',
+                'площадь зу кв м': 'Площадь ЗУ, кв. м',
+                'пп6 п2 ст 393 ст 3917 ст 3920 зк рф': 'Основание предоставления',
+                'контроль по дате - просрочка': 'Контроль по дате ("-" - просрочка)',
+                'оплачено руб': 'Оплачено',
+                'начисленные пени': 'начисленные ПЕНИ',
+                'оплачено пеней': 'оплачено пеней'
             }
             df.rename(columns=column_mapping, inplace=True)
 
-            # Добавляем отсутствующие колонки и упорядочиваем
+            # Добавляем недостающие колонки
             for col in self.expected_columns[self.file_type]:
                 if col not in df.columns:
                     df[col] = None
+
+            # Упорядочиваем колонки
             df = df[self.expected_columns[self.file_type]]
 
             # Обработка числовых колонок
-            money_columns = ['Цена ЗУ по договору, руб.', 'Оплачено', 
-                            'начисленные ПЕНИ', 'оплачено пеней']
-            for col in money_columns:
+            num_cols = ['Площадь ЗУ, кв. м', 'Цена ЗУ по договору, руб.', 
+                    'Оплачено', 'начисленные ПЕНИ', 'оплачено пеней']
+            for col in num_cols:
                 if col in df.columns:
-                    # Преобразуем в строку и обрабатываем разделители
-                    df[col] = df[col].astype(str)
-                    df[col] = df[col].str.replace(r'[^\d,.]', '', regex=True)  # Удаляем лишние символы
-                    df[col] = df[col].str.replace(',', '.', regex=False)         # Заменяем запятую на точку
-                    df[col] = df[col].str.replace(' ', '', regex=False)          # Удаляем пробелы
-                    df[col] = pd.to_numeric(df[col], errors='coerce')            # Конвертируем в число
-                    df[col] = df[col].round(2)
+                    # Удаляем пробелы и заменяем запятые
+                    df[col] = df[col].astype(str).str.replace('\s+', '', regex=True)
+                    df[col] = df[col].str.replace(',', '.', regex=False)
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
 
-            # Обработка дат с учетом формата ДД.ММ.ГГГГ
-            date_columns = self.date_columns.get(self.file_type, [])
-            for col in date_columns:
+            # Обработка дат
+            date_cols = ['Дата заключения договора', 'Срок оплаты по договору',
+                        'Фактическая дата оплаты', 'Дата выписки учета поступлений, № ПП']
+            for col in date_cols:
                 if col in df.columns:
+                    # Конвертируем уже распарсенные даты в строковый формат
                     df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce').dt.strftime('%d.%m.%Y')
 
-            # Текстовые колонки: преобразование чисел в строки
-            text_columns = ['примечание', '№ выписки учета поступлений, № ПП']
-            for col in text_columns:
+            # Текстовые колонки - очистка и преобразование
+            text_cols = ['примечание', '№ выписки учета поступлений, № ПП']
+            for col in text_cols:
                 if col in df.columns:
-                    # Убираем .0 для целых чисел
-                    df[col] = df[col].apply(
-                        lambda x: str(int(float(x))) if isinstance(x, str) and x.replace('.', '', 1).isdigit() and float(x).is_integer() else str(x)
-                    )
-                    df[col] = df[col].str.strip()
+                    # Преобразуем числа в строки без .0
+                    df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True)
+                    df[col] = df[col].replace('nan', '')
 
-            # Замена NaN на None для корректной вставки в SQL
+            # Замена NaN на None
             df = df.where(pd.notnull(df), None)
 
-            # Импорт данных в базу
+            # Импорт в базу
             self.parent.db.import_from_dataframe(self.file_type, df)
             self.update_treeview()
             
