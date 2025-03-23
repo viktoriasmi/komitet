@@ -132,18 +132,18 @@ class MainApp(tk.Tk):
         ttk.Label(frame, text="Выберите тип реестра:", font=('Arial', 14)).pack(pady=20)
         
         btn1 = ttk.Button(frame, 
-                         text="РЕЕСТР договоров купли-продажи", 
-                         command=lambda: FileWindow(self, 1))
+                        text="РЕЕСТР договоров купли-продажи", 
+                        command=lambda: FileWindow(self, 1))
         btn1.pack(pady=10, fill='x')
         
         btn2 = ttk.Button(frame, 
-                         text="РЕЕСТР соглашений о перераспр.", 
-                         command=lambda: FileWindow(self, 2))
+                        text="РЕЕСТР соглашений о перераспр.", 
+                        command=lambda: FileWindow(self, 2))
         btn2.pack(pady=10, fill='x')
         
         btn3 = ttk.Button(frame, 
-                         text="РЕЕСТР разрешений на использование ЗУ", 
-                         command=lambda: FileWindow(self, 3))
+                        text="РЕЕСТР разрешений на использование ЗУ", 
+                        command=lambda: FileWindow(self, 3))
         btn3.pack(pady=10, fill='x')
 
 class FileWindow(tk.Toplevel):
@@ -205,15 +205,20 @@ class FileWindow(tk.Toplevel):
         except:
             return 0
 
+    # В методах расчета:
     def calculate_payment_diff(self, row):
         try:
-            return float(row['Цена ЗУ по договору, руб.']) - float(row['Оплачено'])
+            price = float(row.get('Цена ЗУ по договору, руб.') or 0)
+            paid = float(row.get('Оплачено') or 0)
+            return price - paid
         except:
             return 0
 
     def calculate_peni_diff(self, row):
         try:
-            return float(row['начисленные ПЕНИ']) - float(row['оплачено пеней'])
+            accrued = float(row.get('начисленные ПЕНИ') or 0)
+            paid_pen = float(row.get('оплачено пеней') or 0)
+            return accrued - paid_pen
         except:
             return 0
 
@@ -237,6 +242,18 @@ class FileWindow(tk.Toplevel):
         hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         
+        # Добавляем скрытый столбец ID
+        self.tree["columns"] = ['id'] + self.expected_columns[self.file_type]
+        
+        # Настраиваем колонки
+        for col in self.tree["columns"]:
+            if col == 'id':
+                self.tree.column(col, width=0, stretch=False, anchor='center')
+                self.tree.heading(col, text='')
+            else:
+                self.tree.heading(col, text=col)
+                self.tree.column(col, width=120, anchor='center')
+
         self.tree.grid(row=0, column=0, sticky='nsew')
         vsb.grid(row=0, column=1, sticky='ns')
         hsb.grid(row=1, column=0, sticky='ew')
@@ -245,10 +262,6 @@ class FileWindow(tk.Toplevel):
         container.grid_columnconfigure(0, weight=1)
         
         self.tree.bind('<Double-1>', self.on_double_click)
-        self.tree["columns"] = self.expected_columns[self.file_type]
-        for col in self.expected_columns[self.file_type]:
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=120, anchor='center')
 
     def validate_date(self, date_str):
         try:
@@ -370,7 +383,7 @@ class FileWindow(tk.Toplevel):
             for col in num_cols:
                 if col in df.columns:
                     # Удаляем пробелы и заменяем запятые
-                    df[col] = df[col].astype(str).str.replace('\s+', '', regex=True)
+                    df[col] = df[col].astype(str).str.replace(r'\s+', '', regex=True)
                     df[col] = df[col].str.replace(',', '.', regex=False)
                     df[col] = pd.to_numeric(df[col], errors='coerce')
 
@@ -474,7 +487,6 @@ class FileWindow(tk.Toplevel):
             record_dict = dict(zip(self.expected_columns[self.file_type], record[1:]))
             tags = []
             calculated_values = {}
-
             try:
                 if self.file_type == 1:
                     # Получаем значения из словаря
@@ -539,7 +551,7 @@ class FileWindow(tk.Toplevel):
                         else:
                             final_values.append(str(value))
             
-            self.tree.insert('', 'end', values=final_values, tags=tags)
+            self.tree.insert('', 'end', values=[record_id] + final_values, tags=tags)
     
 
     def create_calendar(self, parent, entry, col_name):
@@ -569,6 +581,19 @@ class FileWindow(tk.Toplevel):
 
     def save_edit(self, new_value, record_id, col_name, edit_win):
         try:
+            # Обработка числовых полей
+            if col_name in ['Цена ЗУ по договору, руб.', 'Оплачено', 
+                        'начисленные ПЕНИ', 'оплачено пеней']:
+                new_value = new_value.strip().replace(',', '.')
+                if not new_value:
+                    new_value = 0.0
+                else:
+                    new_value = float(new_value)
+            
+            # Для текстовых полей сохраняем пустую строку вместо None
+            else:
+                new_value = new_value.strip() or None
+
             self.parent.db.update_record(self.file_type, record_id, col_name, new_value)
             
             if self.file_type == 1:
@@ -578,14 +603,22 @@ class FileWindow(tk.Toplevel):
             edit_win.destroy()
             messagebox.showinfo("Успех", "Изменения сохранены!")
         except Exception as e:
-            messagebox.showerror("Ошибка", str(e))
+            messagebox.showerror("Ошибка", f"Ошибка сохранения: {str(e)}")
 
     def update_calculations(self, record_id, edited_col, new_value):
         cursor = self.parent.db.conn.cursor()
         cursor.execute('SELECT * FROM contracts WHERE id = ?', (record_id,))
         record = cursor.fetchone()
+        
+        if not record:
+            print(f"Запись с id {record_id} не найдена")
+            return
 
         try:
+            # Преобразуем запись в словарь
+            columns = [col[0] for col in cursor.description]
+            record_dict = dict(zip(columns, record))
+            
             # Обновление срока оплаты
             if edited_col == 'Дата заключения договора':
                 contract_date = datetime.strptime(new_value, '%d.%m.%Y')
@@ -596,16 +629,16 @@ class FileWindow(tk.Toplevel):
 
             # Расчет контроля по дате
             if edited_col in ['Срок оплаты по договору', 'Фактическая дата оплаты']:
-                due_date_str = record[8] if edited_col != 'Срок оплаты по договору' else new_value
-                actual_date_str = record[9] if edited_col != 'Фактическая дата оплаты' else new_value
+                due_date_str = record_dict.get('Срок оплаты по договору', '')
+                actual_date_str = record_dict.get('Фактическая дата оплаты', '')
                 
                 if due_date_str and actual_date_str:
                     due_date = datetime.strptime(due_date_str, '%d.%m.%Y')
                     actual_date = datetime.strptime(actual_date_str, '%d.%m.%Y')
-                    days_diff = (actual_date - due_date).days  # Правильный порядок вычитания
+                    days_diff = (actual_date - due_date).days
                     self.parent.db.update_record(1, record_id, 
-                                                'Контроль по дате ("-" - просрочка)', 
-                                                str(days_diff))  # Убираем инверсию знака
+                                            'Контроль по дате ("-" - просрочка)', 
+                                            days_diff)
             # Расчет контроля по оплате
             if edited_col in ['Цена ЗУ по договору, руб.', 'Оплачено']:
                 price = float(record[7]) if edited_col != 'Цена ЗУ по договору, руб.' else float(new_value)
@@ -645,7 +678,7 @@ class FileWindow(tk.Toplevel):
         edit_win.title("Редактирование")
         edit_win.geometry("400x150")
         
-        record_id = self.tree.item(item, 'tags')[0] if self.tree.item(item, 'tags') else self.tree.item(item, 'iid')
+        record_id = int(self.tree.item(item, 'values')[0])
         entry = ttk.Entry(edit_win, font=('Arial', 12), width=30)
         entry.pack(padx=20, pady=20, fill='x', expand=True)
         entry.insert(0, current_value)
@@ -673,8 +706,13 @@ class FileWindow(tk.Toplevel):
         
     def validate_number(self, value):
         try:
-            if value.strip() == "": return True
-            float(value.replace(',', '.'))
+            value = value.strip()
+            if not value:  # Разрешаем пустую строку
+                return True
+            # Заменяем запятую на точку для корректного преобразования
+            value = value.replace(',', '.')
+            # Проверяем, можно ли преобразовать в float
+            float(value)
             return True
         except:
             return False
