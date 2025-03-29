@@ -38,11 +38,14 @@ class DatabaseHandler:
                 '"Цена ЗУ по договору, руб." REAL',
                 '"Срок оплаты по договору" TEXT',
                 '"Фактическая дата оплаты" TEXT',
+                '"Контроль по дате (""-"" - просрочка)" REAL',
                 '"№ выписки учета поступлений, № ПП" TEXT',
                 '"Оплачено" REAL',
+                '"Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" REAL',
                 '"примечание" TEXT',
                 '"начисленные ПЕНИ" REAL',
                 '"оплачено пеней" REAL',
+                '"неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" REAL',
                 '"Дата выписки учета поступлений, № ПП" TEXT',
                 '"Возврат имеющейся переплаты" TEXT'
             ],
@@ -244,12 +247,9 @@ class FileWindow(tk.Toplevel):
         
         # Добавляем скрытый столбец ID
         self.tree["columns"] = ['id'] + self.expected_columns[self.file_type]
-        
-        # Настраиваем колонки
         for col in self.tree["columns"]:
             if col == 'id':
-                self.tree.column(col, width=0, stretch=False, anchor='center')
-                self.tree.heading(col, text='')
+                self.tree.column(col, width=0, stretch=False)
             else:
                 self.tree.heading(col, text=col)
                 self.tree.column(col, width=120, anchor='center')
@@ -382,10 +382,9 @@ class FileWindow(tk.Toplevel):
                     'Оплачено', 'начисленные ПЕНИ', 'оплачено пеней']
             for col in num_cols:
                 if col in df.columns:
-                    # Удаляем пробелы и заменяем запятые
                     df[col] = df[col].astype(str).str.replace(r'\s+', '', regex=True)
                     df[col] = df[col].str.replace(',', '.', regex=False)
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
             # Обработка дат
             date_cols = ['Дата заключения договора', 'Срок оплаты по договору',
@@ -432,10 +431,10 @@ class FileWindow(tk.Toplevel):
                     'Срок оплаты по договору': datetime.now().strftime('%d.%m.%Y'),
                     'Фактическая дата оплаты': '',
                     '№ выписки учета поступлений, № ПП': '',
-                    'Оплачено': '0,00',
+                    'Оплачено': '0.00',
                     'примечание': '',
-                    'начисленные ПЕНИ': '0,00',
-                    'оплачено пеней': '0,00',
+                    'начисленные ПЕНИ': '0.00',
+                    'оплачено пеней': '0.00',
                     'Дата выписки учета поступлений, № ПП': '',
                     'Возврат имеющейся переплаты': ''
                 }
@@ -581,20 +580,22 @@ class FileWindow(tk.Toplevel):
 
     def save_edit(self, new_value, record_id, col_name, edit_win):
         try:
-            # Обработка числовых полей
+            processed_value = None
             if col_name in ['Цена ЗУ по договору, руб.', 'Оплачено', 
-                        'начисленные ПЕНИ', 'оплачено пеней']:
-                new_value = new_value.strip().replace(',', '.')
-                if not new_value:
-                    new_value = 0.0
+                'начисленные ПЕНИ', 'оплачено пеней']:
+                if new_value.strip() == '':
+                    processed_value = 0.0
                 else:
-                    new_value = float(new_value)
-            
-            # Для текстовых полей сохраняем пустую строку вместо None
+                    try:
+                        processed_value = float(new_value.replace(',', '.'))
+                    except ValueError:
+                        processed_value = 0.0
+            elif col_name == 'Номер договора':
+                processed_value = int(new_value) if new_value.strip() else None
             else:
-                new_value = new_value.strip() or None
+                processed_value = new_value.strip() or None
 
-            self.parent.db.update_record(self.file_type, record_id, col_name, new_value)
+            self.parent.db.update_record(self.file_type, record_id, col_name, processed_value)
             
             if self.file_type == 1:
                 self.update_calculations(record_id, col_name, new_value)
@@ -635,10 +636,13 @@ class FileWindow(tk.Toplevel):
                 if due_date_str and actual_date_str:
                     due_date = datetime.strptime(due_date_str, '%d.%m.%Y')
                     actual_date = datetime.strptime(actual_date_str, '%d.%m.%Y')
-                    days_diff = (actual_date - due_date).days
-                    self.parent.db.update_record(1, record_id, 
-                                            'Контроль по дате ("-" - просрочка)', 
-                                            days_diff)
+                    days_diff = (due_date - actual_date).days
+                    self.parent.db.update_record(
+                        1, 
+                        record_id, 
+                        'Контроль по дате (""-"" - просрочка)', 
+                        days_diff
+                    )
             # Расчет контроля по оплате
             if edited_col in ['Цена ЗУ по договору, руб.', 'Оплачено']:
                 price = float(record[7]) if edited_col != 'Цена ЗУ по договору, руб.' else float(new_value)
@@ -665,15 +669,14 @@ class FileWindow(tk.Toplevel):
         
         item = self.tree.identify_row(event.y)
         column = self.tree.identify_column(event.x)
-        
-        col_index = int(column[1:]) - 1
-        current_value = self.tree.item(item, 'values')[col_index]
+        col_index = int(column[1:]) - 2  # Изменено с -1 на -2
+        if col_index < 0 or col_index >= len(self.expected_columns[self.file_type]):
+            return
         col_name = self.expected_columns[self.file_type][col_index]
-
         if col_name in self.parent.db.calculated_columns.get(self.file_type, []):
             messagebox.showinfo("Информация", "Это поле рассчитывается автоматически и не может быть изменено вручную.")
             return
-
+        current_value = self.tree.item(item, 'values')[col_index + 1]
         edit_win = tk.Toplevel(self)
         edit_win.title("Редактирование")
         edit_win.geometry("400x150")
