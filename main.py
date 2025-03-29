@@ -26,7 +26,7 @@ class DatabaseHandler:
         
     def create_tables(self):
         tables = {
-            'contracts': [
+                'contracts': [
                 'id INTEGER PRIMARY KEY AUTOINCREMENT',
                 '"Номер договора" INTEGER',
                 '"Дата заключения договора" TEXT',
@@ -38,16 +38,17 @@ class DatabaseHandler:
                 '"Цена ЗУ по договору, руб." REAL',
                 '"Срок оплаты по договору" TEXT',
                 '"Фактическая дата оплаты" TEXT',
-                '"Контроль по дате (""-"" - просрочка)" REAL',
                 '"№ выписки учета поступлений, № ПП" TEXT',
                 '"Оплачено" REAL',
-                '"Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" REAL',
                 '"примечание" TEXT',
                 '"начисленные ПЕНИ" REAL',
                 '"оплачено пеней" REAL',
-                '"неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" REAL',
                 '"Дата выписки учета поступлений, № ПП" TEXT',
-                '"Возврат имеющейся переплаты" TEXT'
+                '"Возврат имеющейся переплаты" TEXT',
+                # Расчетные колонки
+                '"Контроль по дате (""-"" - просрочка)" REAL',
+                '"Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" REAL',
+                '"неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" REAL'
             ],
         }
         
@@ -152,26 +153,27 @@ class MainApp(tk.Tk):
 class FileWindow(tk.Toplevel):
     expected_columns = {
         1: [
-            'Номер договора', 
-            'Дата заключения договора', 
-            'Покупатель, ИНН', 
-            'Кадастровый номер ЗУ, адрес ЗУ',
-            'Площадь ЗУ, кв. м',
-            'Разрешенное использование ЗУ',
-            'Основание предоставления',
-            'Цена ЗУ по договору, руб.',
-            'Срок оплаты по договору',
-            'Фактическая дата оплаты',
-            'Контроль по дате ("-" - просрочка)',
-            '№ выписки учета поступлений, № ПП',
-            'Оплачено',
-            'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
-            'примечание',
-            'начисленные ПЕНИ',
-            'оплачено пеней',
-            'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)',
-            'Дата выписки учета поступлений, № ПП',
-            'Возврат имеющейся переплаты'
+        'Номер договора', 
+        'Дата заключения договора',
+        'Покупатель, ИНН',
+        'Кадастровый номер ЗУ, адрес ЗУ',
+        'Площадь ЗУ, кв. м',
+        'Разрешенное использование ЗУ',
+        'Основание предоставления',
+        'Цена ЗУ по договору, руб.',
+        'Срок оплаты по договору',
+        'Фактическая дата оплаты',
+        '№ выписки учета поступлений, № ПП',
+        'Оплачено',
+        'примечание',
+        'начисленные ПЕНИ',
+        'оплачено пеней',
+        'Дата выписки учета поступлений, № ПП',
+        'Возврат имеющейся переплаты',
+        # Расчетные колонки в конце
+        'Контроль по дате ("-" - просрочка)',
+        'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
+        'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
         ],
         2: ['Номер', 'Территория', 'Стороны', 'Срок'],
         3: ['Номер', 'ЗУ', 'Заявитель', 'Период']
@@ -190,23 +192,25 @@ class FileWindow(tk.Toplevel):
     def __init__(self, parent, file_type): 
         super().__init__(parent)
         self.parent = parent
-        self.transient(parent)  
-        self.grab_set()  
         self.file_type = file_type
         self.configure_ui()
         self.create_widgets()
         self.create_toolbar()
-        self.update_treeview()
         self.setup_tags()
-        self.state('zoomed')  
-        self.update_idletasks() 
+        
+        # Настройка размеров окна
+        self.geometry("1200x800")
+        self.minsize(800, 600)
+        self.maxsize(1900, 1080)
+        self.state('zoomed')
     
     def calculate_days_diff(self, row):
         try:
             due_date = datetime.strptime(row['Срок оплаты по договору'], "%d.%m.%Y")
             actual_date = datetime.strptime(row['Фактическая дата оплаты'], "%d.%m.%Y")
-            return (due_date - actual_date).days  # Изменен порядок вычитания
-        except:
+            return (due_date - actual_date).days  # Правильный порядок вычитания
+        except Exception as e:
+            print(f"Ошибка расчета дней: {str(e)}")
             return 0
 
     # В методах расчета:
@@ -587,17 +591,25 @@ class FileWindow(tk.Toplevel):
         try:
             processed_value = None
             if col_name in ['Цена ЗУ по договору, руб.', 'Оплачено', 
-                      'начисленные ПЕНИ', 'оплачено пеней', 'Площадь ЗУ, кв. м']:
-                if any(c.isalpha() for c in new_value):
+                        'начисленные ПЕНИ', 'оплачено пеней', 'Площадь ЗУ, кв. м']:
+                # Очищаем и заменяем запятые
+                cleaned_value = new_value.replace(',', '.').strip()
+                
+                # Проверка на недопустимые символы
+                if any(c.isalpha() for c in cleaned_value):
                     raise ValueError("Недопустимые символы в числовом поле")
-                if new_value.strip() == '':
+                
+                # Обработка пустого значения
+                if not cleaned_value:
                     processed_value = 0.0
                 else:
                     try:
-                        processed_value = float(new_value.replace(',', '.'))
+                        processed_value = float(cleaned_value)
                     except ValueError:
-                        processed_value = 0.0
+                        raise ValueError("Некорректный числовой формат")
+
             elif col_name == 'Номер договора':
+                # Обработка номера договора
                 if not new_value.strip():
                     processed_value = None
                 else:
@@ -607,24 +619,25 @@ class FileWindow(tk.Toplevel):
                         messagebox.showerror("Ошибка", 
                             "Номер договора должен содержать только целые числа!\nПример: 4567")
                         return
-            elif col_name == 'Площадь ЗУ, кв. м':
-                try:
-                    processed_value = float(new_value.replace(',', '.')) if new_value.strip() else 0.0
-                except ValueError:
-                    messagebox.showerror("Ошибка",
-                        "Некорректный формат площади!\nИспользуйте числа с точкой или запятой.\nПример: 123.45 или 123,45")
-                    return
+
             else:
+                # Обработка остальных полей
                 processed_value = new_value.strip() or None
 
+            # Обновление записи
             self.parent.db.update_record(self.file_type, record_id, col_name, processed_value)
             
+            # Обновление расчетов
             if self.file_type == 1:
                 self.update_calculations(record_id, col_name, new_value)
             
+            # Обновление интерфейса
             self.update_treeview()
             edit_win.destroy()
             messagebox.showinfo("Успех", "Изменения сохранены!")
+
+        except ValueError as ve:
+            messagebox.showerror("Ошибка", f"Некорректный ввод: {str(ve)}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка сохранения: {str(e)}")
 
@@ -750,15 +763,27 @@ class FileWindow(tk.Toplevel):
         
     def validate_number(self, value):
         try:
-            if not value.strip():
+            value = value.strip()
+            if not value:
                 return True
             value = value.replace(',', '.')
+            
+            # Проверка на несколько точек
             if value.count('.') > 1:
                 return False
+                
+            # Разделение на целую и дробную части
             parts = value.split('.')
+            
+            # Проверка, что все части - числа
+            if not all(part.isdigit() for part in parts if part):
+                return False
+                
+            # Проверка количества знаков после запятой
             if len(parts) > 1 and len(parts[1]) > 2:
-                return False  # Не более 2 знаков после запятой
-            return all(part.isdigit() for part in parts if part)
+                return False
+                
+            return True
         except:
             return False
 
