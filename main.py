@@ -199,12 +199,13 @@ class FileWindow(tk.Toplevel):
         self.update_treeview()
         self.setup_tags()
         self.state('zoomed')  
+        self.update_idletasks() 
     
     def calculate_days_diff(self, row):
         try:
             due_date = datetime.strptime(row['Срок оплаты по договору'], "%d.%m.%Y")
             actual_date = datetime.strptime(row['Фактическая дата оплаты'], "%d.%m.%Y")
-            return (actual_date - due_date).days
+            return (due_date - actual_date).days  # Изменен порядок вычитания
         except:
             return 0
 
@@ -251,12 +252,16 @@ class FileWindow(tk.Toplevel):
             if col == 'id':
                 self.tree.column(col, width=0, stretch=False)
             else:
-                self.tree.heading(col, text=col)
-                self.tree.column(col, width=120, anchor='center')
+                self.tree.heading(col, text=col, anchor='center')
+                self.tree.column(col, width=150, minwidth=100, stretch=True)  # Гибкая ширина
+        
+        # Добавляем горизонтальную прокрутку
+        hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(xscrollcommand=hsb.set)
+        hsb.grid(row=1, column=0, sticky='ew')
 
         self.tree.grid(row=0, column=0, sticky='nsew')
         vsb.grid(row=0, column=1, sticky='ns')
-        hsb.grid(row=1, column=0, sticky='ew')
         
         container.grid_rowconfigure(0, weight=1)
         container.grid_columnconfigure(0, weight=1)
@@ -518,7 +523,7 @@ class FileWindow(tk.Toplevel):
                     # Проверка условий подсветки
                     if days_diff < 0:
                         tags.append('overdue')
-                    if payment_diff != 0:
+                    if payment_diff > 0:
                         tags.append('warning')
 
             except Exception as e:
@@ -582,7 +587,9 @@ class FileWindow(tk.Toplevel):
         try:
             processed_value = None
             if col_name in ['Цена ЗУ по договору, руб.', 'Оплачено', 
-                'начисленные ПЕНИ', 'оплачено пеней']:
+                      'начисленные ПЕНИ', 'оплачено пеней', 'Площадь ЗУ, кв. м']:
+                if any(c.isalpha() for c in new_value):
+                    raise ValueError("Недопустимые символы в числовом поле")
                 if new_value.strip() == '':
                     processed_value = 0.0
                 else:
@@ -676,6 +683,9 @@ class FileWindow(tk.Toplevel):
 
         except Exception as e:
             print(f"Ошибка в расчетах: {e}")
+            # Добавляем запись в лог
+            with open('error.log', 'a') as f:
+                f.write(f"{datetime.now()} - Ошибка: {str(e)}\n")
 
     def clear_placeholder(self, entry, original):
         if entry.get() in ["Только целые числа", "Число с точкой/запятой"]:
@@ -740,17 +750,15 @@ class FileWindow(tk.Toplevel):
         
     def validate_number(self, value):
         try:
-            value = value.strip()
-            if not value:
+            if not value.strip():
                 return True
             value = value.replace(',', '.')
             if value.count('.') > 1:
                 return False
             parts = value.split('.')
-            if not all(part.isdigit() for part in parts):
-                return False
-            float(value)
-            return True
+            if len(parts) > 1 and len(parts[1]) > 2:
+                return False  # Не более 2 знаков после запятой
+            return all(part.isdigit() for part in parts if part)
         except:
             return False
 
