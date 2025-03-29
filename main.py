@@ -591,7 +591,22 @@ class FileWindow(tk.Toplevel):
                     except ValueError:
                         processed_value = 0.0
             elif col_name == 'Номер договора':
-                processed_value = int(new_value) if new_value.strip() else None
+                if not new_value.strip():
+                    processed_value = None
+                else:
+                    try:
+                        processed_value = int(new_value)
+                    except ValueError:
+                        messagebox.showerror("Ошибка", 
+                            "Номер договора должен содержать только целые числа!\nПример: 4567")
+                        return
+            elif col_name == 'Площадь ЗУ, кв. м':
+                try:
+                    processed_value = float(new_value.replace(',', '.')) if new_value.strip() else 0.0
+                except ValueError:
+                    messagebox.showerror("Ошибка",
+                        "Некорректный формат площади!\nИспользуйте числа с точкой или запятой.\nПример: 123.45 или 123,45")
+                    return
             else:
                 processed_value = new_value.strip() or None
 
@@ -662,6 +677,13 @@ class FileWindow(tk.Toplevel):
         except Exception as e:
             print(f"Ошибка в расчетах: {e}")
 
+    def clear_placeholder(self, entry, original):
+        if entry.get() in ["Только целые числа", "Число с точкой/запятой"]:
+            entry.delete(0, tk.END)
+            entry.config(foreground='black')
+            if original:
+                entry.insert(0, original)
+
     def on_double_click(self, event):
         region = self.tree.identify_region(event.x, event.y)
         if region != "cell":
@@ -688,6 +710,15 @@ class FileWindow(tk.Toplevel):
 
         if col_name in self.date_columns.get(self.file_type, []):
             self.create_calendar(edit_win, entry, col_name)
+        
+        if col_name == 'Номер договора':
+            entry.insert(0, "Только целые числа")
+            entry.config(foreground='grey')
+        elif col_name == 'Площадь ЗУ, кв. м':
+            entry.insert(0, "Число с точкой/запятой")
+            entry.config(foreground='grey')
+        
+        entry.bind('<FocusIn>', lambda e: self.clear_placeholder(entry, current_value))
 
         btn_frame = ttk.Frame(edit_win)
         btn_frame.pack(fill='x', padx=20, pady=10)
@@ -710,11 +741,14 @@ class FileWindow(tk.Toplevel):
     def validate_number(self, value):
         try:
             value = value.strip()
-            if not value:  # Разрешаем пустую строку
+            if not value:
                 return True
-            # Заменяем запятую на точку для корректного преобразования
             value = value.replace(',', '.')
-            # Проверяем, можно ли преобразовать в float
+            if value.count('.') > 1:
+                return False
+            parts = value.split('.')
+            if not all(part.isdigit() for part in parts):
+                return False
             float(value)
             return True
         except:
