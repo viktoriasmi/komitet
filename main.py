@@ -231,6 +231,23 @@ class FileWindow(tk.Toplevel):
         super().__init__(parent)
         self.parent = parent
         self.file_type = file_type
+        
+        # Инициализируем Style для этого окна
+        self.style = ttk.Style(self)
+        
+        # Настройки стилей должны быть ВЫШЕ создания виджетов
+        self.style.configure("Treeview", 
+                           font=('Arial', 10), 
+                           rowheight=30,
+                           background="#ffffff",
+                           fieldbackground="#ffffff")
+        self.style.configure("Treeview.Heading", 
+                           font=('Arial', 10, 'bold'),
+                           background="#e1e1e1",
+                           relief="flat")
+        self.style.map("Treeview.Heading", 
+                     background=[('active', '#d0d0d0')])
+        
         self.configure_ui()
         self.create_widgets()
         self.create_toolbar()
@@ -268,13 +285,74 @@ class FileWindow(tk.Toplevel):
     def configure_ui(self):
         self.title(f"Реестр типа {self.file_type}")
         self.geometry("1400x800")
-        self.style = ttk.Style()
         self.style.configure("Red.Treeview", background="#ffcccc")
         self.style.configure("Yellow.Treeview", background="#ffffcc")
 
     def setup_tags(self):
-        self.tree.tag_configure('overdue', background='#ffcccc')  
+        self.tree.tag_configure('overdue', background='#ffcccc')
         self.tree.tag_configure('warning', background='#ffffcc')
+        self.tree.tag_configure('evenrow', background='#f8f8f8')
+        self.tree.tag_configure('oddrow', background='#ffffff')
+
+    def sort_treeview(self, col, reverse):
+        data = [(self.tree.set(child, col), child) 
+              for child in self.tree.get_children('')]
+        
+        # Пытаемся преобразовать к числам для правильной сортировки
+        try:
+            data.sort(key=lambda t: float(t[0].replace(',', '.')), reverse=reverse)
+        except:
+            data.sort(reverse=reverse)
+        
+        for index, (val, child) in enumerate(data):
+            self.tree.move(child, '', index)
+        
+        self.tree.heading(col, 
+                        command=lambda: self.sort_treeview(col, not reverse))
+        
+        # Обновляем цвета строк после сортировки
+        self.update_row_colors()
+
+    def update_row_colors(self):
+        for i, child in enumerate(self.tree.get_children('')):
+            tags = list(self.tree.item(child, 'tags'))
+            # Удаляем старые теги строк
+            tags = [t for t in tags if t not in ('evenrow', 'oddrow')]
+            # Добавляем новые теги
+            tags.append('evenrow' if i % 2 == 0 else 'oddrow')
+            self.tree.item(child, tags=tags)
+
+    def show_tooltip(self, event):
+        region = self.tree.identify_region(event.x, event.y)
+        if region == "cell":
+            item = self.tree.identify_row(event.y)
+            col = self.tree.identify_column(event.x)
+            col_index = int(col[1:]) - 1
+            if 0 <= col_index < len(self.expected_columns[self.file_type]):
+                value = self.tree.item(item, 'values')[col_index + 1]
+                
+                # Создаем подсказку
+                x, y, _, _ = self.tree.bbox(item, col)
+                x += self.tree.winfo_rootx() + 20
+                y += self.tree.winfo_rooty() + 20
+                
+                self.tooltip = tk.Toplevel(self)
+                self.tooltip.wm_overrideredirect(True)
+                self.tooltip.wm_geometry(f"+{x}+{y}")
+                
+                label = ttk.Label(self.tooltip, 
+                                text=value, 
+                                background="#ffffe0",
+                                relief='solid', 
+                                borderwidth=1,
+                                wraplength=300)  # Перенос текста
+                label.pack()
+                self.tooltip_label = label
+
+    def hide_tooltip(self, event):
+        if hasattr(self, 'tooltip'):
+            self.tooltip.destroy()
+            del self.tooltip
 
     def create_widgets(self):
         container = ttk.Frame(self)
@@ -294,6 +372,16 @@ class FileWindow(tk.Toplevel):
                 self.tree.heading(col, text=col, anchor='center')
                 self.tree.column(col, width=150, minwidth=100, stretch=True)  # Гибкая ширина
         
+        for col in self.tree["columns"][1:]:  # Пропускаем столбец 'id'
+            self.tree.heading(col, 
+                            text=col, 
+                            anchor='center',
+                            command=lambda c=col: self.sort_treeview(c, False))
+        
+        # Привязка событий для всплывающих подсказок
+        self.tree.bind('<Motion>', self.show_tooltip)
+        self.tree.bind('<Leave>', self.hide_tooltip)
+
         # Добавляем горизонтальную прокрутку
         hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
         self.tree.configure(xscrollcommand=hsb.set)
@@ -574,7 +662,15 @@ class FileWindow(tk.Toplevel):
                                 final_values.append(str(value))
                         else:
                             final_values.append(str(value))
+            for col in self.tree["columns"][1:]:  # Пропускаем 'id'
+                max_len = max(
+                    [len(str(self.tree.set(child, col))) 
+                    for child in self.tree.get_children('')] + [len(col)]
+                )
+                self.tree.column(col, width=int(max_len * 8.5))  # Эмпирический коэффициент
             
+            # Обновляем цвета строк
+            self.update_row_colors()
             self.tree.insert('', 'end', values=[record_id] + final_values, tags=tags)
     
 
