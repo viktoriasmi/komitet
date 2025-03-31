@@ -51,11 +51,27 @@ class DatabaseHandler:
             ],
         }
         
+        triggers = [
+            '''CREATE TRIGGER IF NOT EXISTS update_control_date AFTER UPDATE ON contracts
+               BEGIN
+                   UPDATE contracts SET 
+                       "Контроль по дате (""-"" - просрочка)" = 
+                           julianday(NEW."Фактическая дата оплаты") - julianday(NEW."Срок оплаты по договору"),
+                       "Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" = 
+                           NEW."Цена ЗУ по договору, руб." - NEW."Оплачено",
+                       "неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" = 
+                           NEW."начисленные ПЕНИ" - NEW."оплачено пеней"
+                   WHERE id = NEW.id;
+               END;'''
+        ]
+        
         with self.conn:
             cursor = self.conn.cursor()
             for table_name, columns in tables.items():
                 columns_str = ', '.join(columns)
                 cursor.execute(f'CREATE TABLE IF NOT EXISTS {table_name} ({columns_str})')
+            for trigger in triggers:
+                cursor.execute(trigger)
 
     def get_table_name(self, file_type):
         return {
@@ -270,9 +286,9 @@ class FileWindow(tk.Toplevel):
 
     def validate_date(self, date_str):
         try:
-            parse(date_str, dayfirst=True)
+            datetime.strptime(date_str, "%d.%m.%Y")
             return True
-        except:
+        except ValueError:
             return False
 
     def filter_data(self, event=None):
@@ -566,55 +582,27 @@ class FileWindow(tk.Toplevel):
 
     def save_edit(self, new_value, record_id, col_name, edit_win):
         try:
-            processed_value = None
+            # Обработка числовых значений
             if col_name in ['Цена ЗУ по договору, руб.', 'Оплачено', 
-                        'начисленные ПЕНИ', 'оплачено пеней', 'Площадь ЗУ, кв. м']:
-                # Очищаем и заменяем запятые
-                cleaned_value = new_value.replace(',', '.').strip()
-                
-                # Проверка на недопустимые символы
-                if any(c.isalpha() for c in cleaned_value):
-                    raise ValueError("Недопустимые символы в числовом поле")
-                
-                # Обработка пустого значения
-                if not cleaned_value:
+                          'начисленные ПЕНИ', 'оплачено пеней', 'Площадь ЗУ, кв. м']:
+                new_value = new_value.replace(',', '.').strip()
+                if not new_value:
                     processed_value = 0.0
                 else:
-                    try:
-                        processed_value = float(cleaned_value)
-                    except ValueError:
-                        raise ValueError("Некорректный числовой формат")
-
-            elif col_name == 'Номер договора':
-                # Обработка номера договора
-                if not new_value.strip():
-                    processed_value = None
-                else:
-                    try:
-                        processed_value = int(new_value)
-                    except ValueError:
-                        messagebox.showerror("Ошибка", 
-                            "Номер договора должен содержать только целые числа!\nПример: 4567")
-                        return
-
-            else:
-                # Обработка остальных полей
-                processed_value = new_value.strip() or None
-
-            # Обновление записи
+                    processed_value = float(new_value)
+            
+            # Обработка дат
+            elif col_name in self.date_columns.get(self.file_type, []):
+                if not self.validate_date(new_value):
+                    raise ValueError("Некорректный формат даты")
+                processed_value = new_value
+            
+            # Обновляем запись
             self.parent.db.update_record(self.file_type, record_id, col_name, processed_value)
             
-            # Обновление расчетов
-            if self.file_type == 1:
-                self.update_calculations(record_id, col_name, new_value)
-            
-            # Обновление интерфейса
+            # Триггеры БД автоматически пересчитают значения
             self.update_treeview()
-            edit_win.destroy()
-            messagebox.showinfo("Успех", "Изменения сохранены!")
-
-        except ValueError as ve:
-            messagebox.showerror("Ошибка", f"Некорректный ввод: {str(ve)}")
+            
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка сохранения: {str(e)}")
 
