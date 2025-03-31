@@ -56,7 +56,18 @@ class DatabaseHandler:
                BEGIN
                    UPDATE contracts SET 
                        "Контроль по дате (""-"" - просрочка)" = 
-                           julianday(NEW."Фактическая дата оплаты") - julianday(NEW."Срок оплаты по договору"),
+                           CASE WHEN NEW."Фактическая дата оплаты" IS NOT NULL AND NEW."Срок оплаты по договору" IS NOT NULL
+                               THEN julianday(
+                                   substr(NEW."Фактическая дата оплаты", 7, 4) || '-' ||
+                                   substr(NEW."Фактическая дата оплаты", 4, 2) || '-' ||
+                                   substr(NEW."Фактическая дата оплаты", 1, 2)
+                               ) - julianday(
+                                   substr(NEW."Срок оплаты по договору", 7, 4) || '-' ||
+                                   substr(NEW."Срок оплаты по договору", 4, 2) || '-' ||
+                                   substr(NEW."Срок оплаты по договору", 1, 2)
+                               )
+                               ELSE NULL
+                           END,
                        "Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" = 
                            NEW."Цена ЗУ по договору, руб." - NEW."Оплачено",
                        "неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" = 
@@ -582,89 +593,95 @@ class FileWindow(tk.Toplevel):
 
     def save_edit(self, new_value, record_id, col_name, edit_win):
         try:
-            # Обработка числовых значений
+            processed_value = None
+            # Обработка числовых полей
             if col_name in ['Цена ЗУ по договору, руб.', 'Оплачено', 
                           'начисленные ПЕНИ', 'оплачено пеней', 'Площадь ЗУ, кв. м']:
-                new_value = new_value.replace(',', '.').strip()
-                if not new_value:
-                    processed_value = 0.0
-                else:
-                    processed_value = float(new_value)
+                cleaned_value = new_value.replace(' ', '').replace(',', '.').strip()
+                processed_value = float(cleaned_value) if cleaned_value else 0.0
             
             # Обработка дат
             elif col_name in self.date_columns.get(self.file_type, []):
                 if not self.validate_date(new_value):
-                    raise ValueError("Некорректный формат даты")
+                    raise ValueError("Некорректный формат даты (требуется ДД.ММ.ГГГГ)")
                 processed_value = new_value
             
-            # Обновляем запись
+            # Обработка текстовых полей
+            else:
+                processed_value = new_value.strip()
+
+            # Обновление записи
             self.parent.db.update_record(self.file_type, record_id, col_name, processed_value)
             
-            # Триггеры БД автоматически пересчитают значения
+            # Обновление интерфейса
             self.update_treeview()
-            
+            edit_win.destroy()
+            messagebox.showinfo("Успех", "Изменения успешно сохранены!")
+
+        except ValueError as ve:
+            messagebox.showerror("Ошибка", f"Некорректный ввод: {str(ve)}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка сохранения: {str(e)}")
 
-    def update_calculations(self, record_id, edited_col, new_value):
-        cursor = self.parent.db.conn.cursor()
-        cursor.execute('SELECT * FROM contracts WHERE id = ?', (record_id,))
-        record = cursor.fetchone()
+    # def update_calculations(self, record_id, edited_col, new_value):
+    #     cursor = self.parent.db.conn.cursor()
+    #     cursor.execute('SELECT * FROM contracts WHERE id = ?', (record_id,))
+    #     record = cursor.fetchone()
         
-        if not record:
-            print(f"Запись с id {record_id} не найдена")
-            return
+    #     if not record:
+    #         print(f"Запись с id {record_id} не найдена")
+    #         return
 
-        try:
-            # Преобразуем запись в словарь
-            columns = [col[0] for col in cursor.description]
-            record_dict = dict(zip(columns, record))
+    #     try:
+    #         # Преобразуем запись в словарь
+    #         columns = [col[0] for col in cursor.description]
+    #         record_dict = dict(zip(columns, record))
             
-            # Обновление срока оплаты
-            if edited_col in ['Срок оплаты по договору', 'Фактическая дата оплаты']:
-                cursor.execute('''
-                    SELECT 
-                        "Срок оплаты по договору",
-                        "Фактическая дата оплаты",
-                        "Контроль по дате (""-"" - просрочка)"
-                    FROM contracts WHERE id = ?
-                ''', (record_id,))
-                due_date_str, actual_date_str, _ = cursor.fetchone()
+    #         # Обновление срока оплаты
+    #         if edited_col in ['Срок оплаты по договору', 'Фактическая дата оплаты']:
+    #             cursor.execute('''
+    #                 SELECT 
+    #                     "Срок оплаты по договору",
+    #                     "Фактическая дата оплаты",
+    #                     "Контроль по дате (""-"" - просрочка)"
+    #                 FROM contracts WHERE id = ?
+    #             ''', (record_id,))
+    #             due_date_str, actual_date_str, _ = cursor.fetchone()
                 
-                if due_date_str and actual_date_str:
-                    try:
-                        due_date = datetime.strptime(due_date_str, '%d.%m.%Y')
-                        actual_date = datetime.strptime(actual_date_str, '%d.%m.%Y')
-                        days_diff = (actual_date - due_date).days  # Правильный порядок вычисления
-                        self.parent.db.update_record(
-                            1, 
-                            record_id, 
-                            'Контроль по дате (""-"" - просрочка)', 
-                            days_diff
-                        )
-                    except Exception as e:
-                        print(f"Ошибка расчета дней: {str(e)}")
-            # Расчет контроля по оплате
-            if edited_col in ['Цена ЗУ по договору, руб.', 'Оплачено']:
-                price = float(record[7]) if edited_col != 'Цена ЗУ по договору, руб.' else float(new_value)
-                paid = float(record[12]) if edited_col != 'Оплачено' else float(new_value)
-                payment_diff = price - paid
-                self.parent.db.update_record(1, record_id, 
-                    'Контроль по оплате цены ("-" - переплата; "+" - недоплата)', f"{payment_diff:.2f}")
+    #             if due_date_str and actual_date_str:
+    #                 try:
+    #                     due_date = datetime.strptime(due_date_str, '%d.%m.%Y')
+    #                     actual_date = datetime.strptime(actual_date_str, '%d.%m.%Y')
+    #                     days_diff = (actual_date - due_date).days  # Правильный порядок вычисления
+    #                     self.parent.db.update_record(
+    #                         1, 
+    #                         record_id, 
+    #                         'Контроль по дате (""-"" - просрочка)', 
+    #                         days_diff
+    #                     )
+    #                 except Exception as e:
+    #                     print(f"Ошибка расчета дней: {str(e)}")
+    #         # Расчет контроля по оплате
+    #         if edited_col in ['Цена ЗУ по договору, руб.', 'Оплачено']:
+    #             price = float(record[7]) if edited_col != 'Цена ЗУ по договору, руб.' else float(new_value)
+    #             paid = float(record[12]) if edited_col != 'Оплачено' else float(new_value)
+    #             payment_diff = price - paid
+    #             self.parent.db.update_record(1, record_id, 
+    #                 'Контроль по оплате цены ("-" - переплата; "+" - недоплата)', f"{payment_diff:.2f}")
 
-            # Расчет неоплаченных пени
-            if edited_col in ['начисленные ПЕНИ', 'оплачено пеней']:
-                accrued = float(record[15]) if edited_col != 'начисленные ПЕНИ' else float(new_value)
-                paid_pen = float(record[16]) if edited_col != 'оплачено пеней' else float(new_value)
-                unpaid_pen = math.floor(accrued - paid_pen)
-                self.parent.db.update_record(1, record_id, 
-                    'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)', str(unpaid_pen))
+    #         # Расчет неоплаченных пени
+    #         if edited_col in ['начисленные ПЕНИ', 'оплачено пеней']:
+    #             accrued = float(record[15]) if edited_col != 'начисленные ПЕНИ' else float(new_value)
+    #             paid_pen = float(record[16]) if edited_col != 'оплачено пеней' else float(new_value)
+    #             unpaid_pen = math.floor(accrued - paid_pen)
+    #             self.parent.db.update_record(1, record_id, 
+    #                 'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)', str(unpaid_pen))
 
-        except Exception as e:
-            print(f"Ошибка в расчетах: {e}")
-            # Добавляем запись в лог
-            with open('error.log', 'a') as f:
-                f.write(f"{datetime.now()} - Ошибка: {str(e)}\n")
+    #     except Exception as e:
+    #         print(f"Ошибка в расчетах: {e}")
+    #         # Добавляем запись в лог
+    #         with open('error.log', 'a') as f:
+    #             f.write(f"{datetime.now()} - Ошибка: {str(e)}\n")
 
     def clear_placeholder(self, entry, original):
         if entry.get() in ["Только целые числа", "Число с точкой/запятой"]:
