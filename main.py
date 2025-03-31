@@ -45,7 +45,6 @@ class DatabaseHandler:
                 '"оплачено пеней" REAL',
                 '"Дата выписки учета поступлений, № ПП" TEXT',
                 '"Возврат имеющейся переплаты" TEXT',
-                # Расчетные колонки
                 '"Контроль по дате (""-"" - просрочка)" REAL',
                 '"Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" REAL',
                 '"неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" REAL'
@@ -197,11 +196,8 @@ class FileWindow(tk.Toplevel):
         self.create_widgets()
         self.create_toolbar()
         self.setup_tags()
-        
-        # Настройка размеров окна
-        self.geometry("1200x800")
-        self.minsize(800, 600)
-        self.maxsize(1900, 1080)
+        self.update_treeview()
+
         self.state('zoomed')
     
     def calculate_days_diff(self, row):
@@ -428,16 +424,18 @@ class FileWindow(tk.Toplevel):
             
             # Создаем данные по умолчанию в соответствии с типом реестра
             if self.file_type == 1:
+                contract_date = datetime.now()
+                due_date = (contract_date + timedelta(days=7)).strftime('%d.%m.%Y')  # Добавляем 7 дней
                 default_data = {
                     'Номер договора': '',
-                    'Дата заключения договора': datetime.now().strftime('%d.%m.%Y'),
+                    'Дата заключения договора': contract_date.strftime('%d.%m.%Y'),
                     'Покупатель, ИНН': 'ООО "Пример", ИНН 0000000000',
                     'Кадастровый номер ЗУ, адрес ЗУ': '00:00:0000000:00, г. Пример',
                     'Площадь ЗУ, кв. м': '',
                     'Разрешенное использование ЗУ': '',
                     'Основание предоставления': 'Номер ЗК РФ',
                     'Цена ЗУ по договору, руб.': '0.00',
-                    'Срок оплаты по договору': datetime.now().strftime('%d.%m.%Y'),
+                    'Срок оплаты по договору': due_date,
                     'Фактическая дата оплаты': '',
                     '№ выписки учета поступлений, № ПП': '',
                     'Оплачено': '0.00',
@@ -497,39 +495,21 @@ class FileWindow(tk.Toplevel):
             calculated_values = {}
             try:
                 if self.file_type == 1:
-                    # Получаем значения из словаря
-                    due_date_str = record_dict.get('Срок оплаты по договору', '')
-                    actual_date_str = record_dict.get('Фактическая дата оплаты', '')
-                    
-                    # Парсим даты
-                    days_diff = 0
-                    if due_date_str and actual_date_str:
-                        due_date = datetime.strptime(due_date_str, "%d.%m.%Y")
-                        actual_date = datetime.strptime(actual_date_str, "%d.%m.%Y")
-                        days_diff = (actual_date - due_date).days
-
-                    # Получаем и преобразуем числовые значения
-                    price = float(record_dict.get('Цена ЗУ по договору, руб.', 0))
-                    paid = float(record_dict.get('Оплачено', 0))
-                    accrued = float(record_dict.get('начисленные ПЕНИ', 0))
-                    paid_pen = float(record_dict.get('оплачено пеней', 0))
-
-                    # Расчет значений
-                    payment_diff = price - paid
-                    unpaid_pen = accrued - paid_pen
-
+                    # Используем значения из базы данных
                     calculated_values = {
-                        'Контроль по дате ("-" - просрочка)': days_diff,
-                        'Контроль по оплате цены ("-" - переплата; "+" - недоплата)': payment_diff,
-                        'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)': unpaid_pen
+                        'Контроль по дате ("-" - просрочка)': record_dict.get('Контроль по дате ("-" - просрочка)', 0),
+                        'Контроль по оплате цены ("-" - переплата; "+" - недоплата)': record_dict.get('Контроль по оплате цены ("-" - переплата; "+" - недоплата)', 0),
+                        'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)': record_dict.get('неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)', 0)
                     }
 
                     # Проверка условий подсветки
+                    days_diff = record_dict.get('Контроль по дате ("-" - просрочка)', 0) or 0
+                    payment_diff = record_dict.get('Контроль по оплате цены ("-" - переплата; "+" - недоплата)', 0) or 0
+                    
                     if days_diff < 0:
                         tags.append('overdue')
                     if payment_diff > 0:
                         tags.append('warning')
-
             except Exception as e:
                 print(f"Ошибка расчетов: {e}")
 
@@ -537,19 +517,16 @@ class FileWindow(tk.Toplevel):
             final_values = []
             for col in self.expected_columns[self.file_type]:
                 if col in calculated_values:
-                    # Форматируем числовые значения
                     value = calculated_values[col]
                     if isinstance(value, float):
                         final_values.append(f"{value:.2f}".replace('.', ','))
                     else:
                         final_values.append(str(value))
                 else:
-                    # Берем значение из записи и обрабатываем пустые значения
                     value = record_dict.get(col, '')
                     if value is None:
                         final_values.append('')
                     else:
-                        # Для числовых полей добавляем форматирование
                         if col in ['Цена ЗУ по договору, руб.', 'Оплачено', 
                                 'начисленные ПЕНИ', 'оплачено пеней']:
                             try:
@@ -656,28 +633,29 @@ class FileWindow(tk.Toplevel):
             record_dict = dict(zip(columns, record))
             
             # Обновление срока оплаты
-            if edited_col == 'Дата заключения договора':
-                contract_date = datetime.strptime(new_value, '%d.%m.%Y')
-                due_date = (contract_date + timedelta(days=7)).strftime('%d.%m.%Y')
-                self.parent.db.update_record(1, record_id, 'Срок оплаты по договору', due_date)
-                edited_col = 'Срок оплаты по договору'
-                new_value = due_date
-
-            # Расчет контроля по дате
             if edited_col in ['Срок оплаты по договору', 'Фактическая дата оплаты']:
-                due_date_str = record_dict.get('Срок оплаты по договору', '')
-                actual_date_str = record_dict.get('Фактическая дата оплаты', '')
+                cursor.execute('''
+                    SELECT 
+                        "Срок оплаты по договору",
+                        "Фактическая дата оплаты",
+                        "Контроль по дате (""-"" - просрочка)"
+                    FROM contracts WHERE id = ?
+                ''', (record_id,))
+                due_date_str, actual_date_str, _ = cursor.fetchone()
                 
                 if due_date_str and actual_date_str:
-                    due_date = datetime.strptime(due_date_str, '%d.%m.%Y')
-                    actual_date = datetime.strptime(actual_date_str, '%d.%m.%Y')
-                    days_diff = (due_date - actual_date).days
-                    self.parent.db.update_record(
-                        1, 
-                        record_id, 
-                        'Контроль по дате (""-"" - просрочка)', 
-                        days_diff
-                    )
+                    try:
+                        due_date = datetime.strptime(due_date_str, '%d.%m.%Y')
+                        actual_date = datetime.strptime(actual_date_str, '%d.%m.%Y')
+                        days_diff = (actual_date - due_date).days  # Правильный порядок вычисления
+                        self.parent.db.update_record(
+                            1, 
+                            record_id, 
+                            'Контроль по дате (""-"" - просрочка)', 
+                            days_diff
+                        )
+                    except Exception as e:
+                        print(f"Ошибка расчета дней: {str(e)}")
             # Расчет контроля по оплате
             if edited_col in ['Цена ЗУ по договору, руб.', 'Оплачено']:
                 price = float(record[7]) if edited_col != 'Цена ЗУ по договору, руб.' else float(new_value)
