@@ -73,77 +73,78 @@ class DatabaseHandler:
             '"№ выписки учета поступлений, № ПП" TEXT'
         ]
         }
-        
         triggers = [
-            '''CREATE TRIGGER IF NOT EXISTS update_due_date AFTER UPDATE OF "Дата заключения договора" ON contracts
-               BEGIN
-                   UPDATE contracts SET
-                       "Срок оплаты по договору" = 
-                           strftime('%d.%m.%Y', 
-                               date(
-                                   substr(NEW."Дата заключения договора", 7, 4) || '-' ||
-                                   substr(NEW."Дата заключения договора", 4, 2) || '-' ||
-                                   substr(NEW."Дата заключения договора", 1, 2),
-                                   '+7 days'
-                               )
-                           )
-                   WHERE id = NEW.id;
-               END;''',
-            
-            '''CREATE TRIGGER IF NOT EXISTS update_control_date AFTER UPDATE ON contracts
-               BEGIN
-                   UPDATE contracts SET 
-                       "Контроль по дате (""-"" - просрочка)" = 
-                           julianday(
-                               substr(NEW."Срок оплаты по договору", 7, 4) || '-' ||
-                               substr(NEW."Срок оплаты по договору", 4, 2) || '-' ||
-                               substr(NEW."Срок оплаты по договору", 1, 2)
-                           ) - julianday(
-                               substr(NEW."Фактическая дата оплаты", 7, 4) || '-' ||
-                               substr(NEW."Фактическая дата оплаты", 4, 2) || '-' ||
-                               substr(NEW."Фактическая дата оплаты", 1, 2)
-                           ),
-                       "Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" = 
-                           NEW."Цена ЗУ по договору, руб." - NEW."Оплачено",
-                       "неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" = 
-                           NEW."начисленные ПЕНИ" - NEW."оплачено пеней"
-                   WHERE id = NEW.id;
-               END;'''
-                '''CREATE TRIGGER IF NOT EXISTS update_agreement_due_date AFTER UPDATE OF "Дата заключения" ON agreements
-                BEGIN
-                    UPDATE agreements SET
-                        "Срок оплаты" = 
-                            strftime('%%d.%%m.%%Y', 
-                                date(
-                                    substr(NEW."Дата заключения", 7, 4) || '-' ||
-                                    substr(NEW."Дата заключения", 4, 2) || '-' ||
-                                    substr(NEW."Дата заключения", 1, 2),
-                                    '+7 days'
-                                )
-                            )
-                    WHERE id = NEW.id;
-                END;''',
-                
-                '''CREATE TRIGGER IF NOT EXISTS update_agreement_control AFTER UPDATE ON agreements
-                BEGIN
-                    UPDATE agreements SET 
-                        "Контроль по дате (""-"" - просрочка)" = 
-                            julianday(
-                                substr(NEW."Срок оплаты", 7, 4) || '-' ||
-                                substr(NEW."Срок оплаты", 4, 2) || '-' ||
-                                substr(NEW."Срок оплаты", 1, 2)
-                            ) - julianday(
-                                substr(NEW."Фактическая дата оплаты", 7, 4) || '-' ||
-                                substr(NEW."Фактическая дата оплаты", 4, 2) || '-' ||
-                                substr(NEW."Фактическая дата оплаты", 1, 2)
-                            ),
-                        "Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" = 
-                            NEW."Размер платы за увеличение площади ЗУ, руб." - NEW."Оплачено",
-                        "неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" = 
-                            NEW."начисленные ПЕНИ" - NEW."оплачено пеней"
-                    WHERE id = NEW.id;
-                END;'''
-            ]
+        '''CREATE TRIGGER IF NOT EXISTS update_due_date AFTER UPDATE OF "Дата заключения договора" ON contracts
+        BEGIN
+            UPDATE contracts SET
+                "Срок оплаты по договору" = 
+                    strftime('%d.%m.%Y', 
+                        date(
+                            substr(NEW."Дата заключения договора", 7, 4) || '-' ||
+                            substr(NEW."Дата заключения договора", 4, 2) || '-' ||
+                            substr(NEW."Дата заключения договора", 1, 2),
+                            '+7 days'
+                        )
+                    )
+            WHERE id = NEW.id;
+        END;''',
+        
+        '''CREATE TRIGGER IF NOT EXISTS update_control_date AFTER UPDATE ON contracts
+        BEGIN
+            UPDATE contracts SET 
+                "Контроль по дате (""-"" - просрочка)" = 
+                    julianday(
+                        substr(NEW."Срок оплаты по договору", 7, 4) || '-' ||
+                        substr(NEW."Срок оплаты по договору", 4, 2) || '-' ||
+                        substr(NEW."Срок оплаты по договору", 1, 2)
+                    ) - julianday(
+                        substr(NEW."Фактическая дата оплаты", 7, 4) || '-' ||
+                        substr(NEW."Фактическая дата оплаты", 4, 2) || '-' ||
+                        substr(NEW."Фактическая дата оплаты", 1, 2)
+                    ),
+                "Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" = 
+                    NEW."Цена ЗУ по договору, руб." - NEW."Оплачено",
+                "неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" = 
+                    NEW."начисленные ПЕНИ" - NEW."оплачено пеней"
+            WHERE id = NEW.id;
+        END;''',
+        
+        # Исправленные триггеры для agreements
+        '''CREATE TRIGGER IF NOT EXISTS update_agreement_due_date AFTER UPDATE OF "Дата заключения" ON agreements
+        BEGIN
+            UPDATE agreements SET
+                "Срок оплаты" = 
+                    strftime('%d.%m.%Y', 
+                        date(
+                            substr(NEW."Дата заключения", 7, 4) || '-' ||
+                            substr(NEW."Дата заключения", 4, 2) || '-' ||
+                            substr(NEW."Дата заключения", 1, 2),
+                            '+7 days'
+                        )
+                    )
+            WHERE id = NEW.id;
+        END;''',
+        
+        '''CREATE TRIGGER IF NOT EXISTS update_agreement_control AFTER UPDATE ON agreements
+        BEGIN
+            UPDATE agreements SET 
+                "Контроль по дате (""-"" - просрочка)" = 
+                    julianday(
+                        substr(NEW."Срок оплаты", 7, 4) || '-' ||
+                        substr(NEW."Срок оплаты", 4, 2) || '-' ||
+                        substr(NEW."Срок оплаты", 1, 2)
+                    ) - julianday(
+                        substr(NEW."Фактическая дата оплаты", 7, 4) || '-' ||
+                        substr(NEW."Фактическая дата оплаты", 4, 2) || '-' ||
+                        substr(NEW."Фактическая дата оплаты", 1, 2)
+                    ),
+                "Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" = 
+                    NEW."Размер платы за увеличение площади ЗУ, руб." - NEW."Оплачено",
+                "неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" = 
+                    NEW."начисленные ПЕНИ" - NEW."оплачено пеней"
+            WHERE id = NEW.id;
+        END;'''
+    ]
         
         with self.conn:
             cursor = self.conn.cursor()
