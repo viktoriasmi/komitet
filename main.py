@@ -364,6 +364,8 @@ class FileWindow(tk.Toplevel):
         
         # Обновляем цвета строк после сортировки
         self.update_row_colors()
+        # Повторно применяем фильтр после сортировки
+        self.filter_data()
 
     def update_row_colors(self):
         for i, child in enumerate(self.tree.get_children('')):
@@ -459,15 +461,25 @@ class FileWindow(tk.Toplevel):
         query = self.search_var.get().lower()
         col = self.column_var.get()
         
-        for item in self.tree.get_children():
+        for item in self.tree.get_children(''):
             values = self.tree.item(item, 'values')
             col_index = self.tree["columns"].index(col)
-            if query in str(values[col_index]).lower():
-                self.tree.item(item, tags=('match',))
+            cell_value = str(values[col_index]).lower()
+            match = query in cell_value
+            
+            # Получаем текущие теги и удаляем предыдущие теги фильтра
+            current_tags = list(self.tree.item(item, 'tags'))
+            current_tags = [t for t in current_tags if t not in ('match', 'nomatch')]
+            
+            if match:
+                current_tags.append('match')
             else:
-                self.tree.item(item, tags=('nomatch',))
+                current_tags.append('nomatch')
+            
+            self.tree.item(item, tags=current_tags)
         
-        self.tree.tag_configure('match', background='')
+        # Настройка внешнего вида тегов
+        self.tree.tag_configure('match', background='#90EE90')
         self.tree.tag_configure('nomatch', background='gray90')
     
     def create_toolbar(self):
