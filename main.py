@@ -227,6 +227,56 @@ class FileWindow(tk.Toplevel):
         3: []
     }
     
+    def show_tooltip(self, event):
+        region = self.tree.identify_region(event.x, event.y)
+        if region == "cell":
+            if self.tooltip_timer:
+                self.after_cancel(self.tooltip_timer)
+            
+            self.tooltip_timer = self.after(500, self._create_tooltip, event)
+        else:
+            self.hide_tooltip()
+
+    def _create_tooltip(self, event):
+        item = self.tree.identify_row(event.y)
+        col = self.tree.identify_column(event.x)
+        
+        # Получаем индекс данных (игнорируя скрытый столбец id)
+        col_index = int(col[1:]) - 2  # -2 так как первый столбец id (индекс 0)
+        
+        if 0 <= col_index < len(self.expected_columns[self.file_type]):
+            value = self.tree.item(item, 'values')[col_index + 1]  # +1 из-за id
+            
+            # Получаем координаты ячейки
+            x, y, width, height = self.tree.bbox(item, column=col)
+            
+            # Преобразуем координаты в абсолютные
+            x_root = self.tree.winfo_rootx() + x + width//2
+            y_root = self.tree.winfo_rooty() + y + height
+            
+            if self.tooltip:
+                self.tooltip.destroy()
+            
+            self.tooltip = tk.Toplevel(self)
+            self.tooltip.wm_overrideredirect(True)
+            self.tooltip.wm_geometry(f"+{x_root}+{y_root}")
+            
+            label = ttk.Label(self.tooltip, 
+                            text=value, 
+                            background="#ffffe0",
+                            relief='solid',
+                            borderwidth=1,
+                            wraplength=300)
+            label.pack()
+
+    def hide_tooltip(self, event=None):
+        if self.tooltip_timer:
+            self.after_cancel(self.tooltip_timer)
+            self.tooltip_timer = None
+        if self.tooltip:
+            self.tooltip.destroy()
+            self.tooltip = None
+
     def __init__(self, parent, file_type): 
         super().__init__(parent)
         self.parent = parent
@@ -255,6 +305,8 @@ class FileWindow(tk.Toplevel):
         self.update_treeview()
 
         self.state('zoomed')
+        self.tooltip = None
+        self.tooltip_timer = None
     
     def calculate_days_diff(self, row):
         try:
@@ -379,8 +431,9 @@ class FileWindow(tk.Toplevel):
                             command=lambda c=col: self.sort_treeview(c, False))
         
         # Привязка событий для всплывающих подсказок
-        self.tree.bind('<Motion>', self.show_tooltip)
-        self.tree.bind('<Leave>', self.hide_tooltip)
+        # self.tree.bind('<Motion>', self.show_tooltip)
+        # self.tree.bind('<Leave>', self.hide_tooltip)
+        # self.tree.bind('<ButtonPress>', self.hide_tooltip)
 
         # Добавляем горизонтальную прокрутку
         hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
