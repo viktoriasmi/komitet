@@ -4,6 +4,7 @@ import sys
 import math
 import os
 import sqlite3
+import hashlib
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 from dateutil.parser import parse
@@ -26,6 +27,12 @@ class DatabaseHandler:
         
     def create_tables(self):
         tables = {
+                'users': [
+                    'id INTEGER PRIMARY KEY AUTOINCREMENT',
+                    'fio TEXT NOT NULL',
+                    'login TEXT UNIQUE NOT NULL',
+                    'password TEXT NOT NULL'
+                ],
                 'contracts': [
                 'id INTEGER PRIMARY KEY AUTOINCREMENT',
                 '"Номер договора" INTEGER',
@@ -209,6 +216,166 @@ class DatabaseHandler:
         with self.conn:
             return pd.read_sql(f'SELECT * FROM {table}', self.conn)
 
+class AuthWindow(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Аутентификация")
+        self.geometry("300x200")
+        self.create_widgets()
+        self.grab_set()
+
+    def create_widgets(self):
+        frame = ttk.Frame(self)
+        frame.pack(expand=True, padx=20, pady=20)
+
+        ttk.Button(frame, text="Вход", command=self.open_login).pack(pady=10, fill='x')
+        ttk.Button(frame, text="Регистрация", command=self.open_register).pack(pady=10, fill='x')
+
+    def open_login(self):
+        LoginDialog(self)
+
+    def open_register(self):
+        RegisterDialog(self)
+
+class RegisterDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Регистрация")
+        self.geometry("300x250")
+        self.create_widgets()
+        self.grab_set()
+
+    def create_widgets(self):
+        frame = ttk.Frame(self)
+        frame.pack(padx=10, pady=10, fill='both', expand=True)
+
+        ttk.Label(frame, text="ФИО:").grid(row=0, column=0, sticky='w', pady=2)
+        self.fio_entry = ttk.Entry(frame)
+        self.fio_entry.grid(row=0, column=1, pady=2)
+
+        ttk.Label(frame, text="Логин:").grid(row=1, column=0, sticky='w', pady=2)
+        self.login_entry = ttk.Entry(frame)
+        self.login_entry.grid(row=1, column=1, pady=2)
+
+        ttk.Label(frame, text="Пароль:").grid(row=2, column=0, sticky='w', pady=2)
+        self.password_entry = ttk.Entry(frame, show="*")
+        self.password_entry.grid(row=2, column=1, pady=2)
+
+        ttk.Label(frame, text="Подтвердите пароль:").grid(row=3, column=0, sticky='w', pady=2)
+        self.confirm_entry = ttk.Entry(frame, show="*")
+        self.confirm_entry.grid(row=3, column=1, pady=2)
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.grid(row=4, columnspan=2, pady=10)
+
+        ttk.Button(btn_frame, text="Зарегистрироваться", command=self.register).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side='left', padx=5)
+
+    def register(self):
+        fio = self.fio_entry.get()
+        login = self.login_entry.get().strip()
+        password = self.password_entry.get().strip()
+        confirm = self.confirm_entry.get().strip()
+
+        if not all([fio, login, password, confirm]):
+            messagebox.showerror("Ошибка", "Все поля обязательны для заполнения")
+            return
+
+        if password != confirm:
+            messagebox.showerror("Ошибка", "Пароли не совпадают")
+            return
+
+        db = DatabaseHandler()
+        cursor = db.conn.cursor()
+        try:
+            cursor.execute("SELECT login FROM users WHERE login = ?", (login,))
+            if cursor.fetchone():
+                messagebox.showerror("Ошибка", "Логин уже занят")
+                return
+
+            hashed_password = hashlib.sha256(f"salt{password}".encode()).hexdigest()
+            cursor.execute(
+                "INSERT INTO users (fio, login, password) VALUES (?, ?, ?)",
+                (fio, login, hashed_password)
+            )
+            db.conn.commit()
+            messagebox.showinfo("Успех", "Регистрация прошла успешно")
+            self.destroy()
+        except sqlite3.Error as e:
+            messagebox.showerror("Ошибка БД", str(e))
+        finally:
+            cursor.close()
+
+class LoginDialog(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Вход")
+        self.geometry("300x150")
+        self.create_widgets()
+        self.grab_set()
+
+    def create_widgets(self):
+        frame = ttk.Frame(self)
+        frame.pack(padx=10, pady=10, fill='both', expand=True)
+
+        ttk.Label(frame, text="Логин:").grid(row=0, column=0, sticky='w', pady=2)
+        self.login_entry = ttk.Entry(frame)
+        self.login_entry.grid(row=0, column=1, pady=2)
+
+        ttk.Label(frame, text="Пароль:").grid(row=1, column=0, sticky='w', pady=2)
+        self.password_entry = ttk.Entry(frame, show="*")
+        self.password_entry.grid(row=1, column=1, pady=2)
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.grid(row=2, columnspan=2, pady=10)
+
+        ttk.Button(btn_frame, text="Войти", command=self.login).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side='left', padx=5)
+
+    def login(self):
+        login = self.login_entry.get().strip()
+        password = self.password_entry.get().strip()
+
+        if not login or not password:
+            messagebox.showerror("Ошибка", "Введите логин и пароль")
+            return
+
+        db = DatabaseHandler()
+        cursor = db.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT password FROM users WHERE login = ?",
+                (login,)
+            )
+            result = cursor.fetchone()
+            if not result:
+                messagebox.showerror("Ошибка", "Неверный логин или пароль")
+                return
+
+            hashed_password = hashlib.sha256(f"salt{password}".encode()).hexdigest()
+            if result[0] != hashed_password:
+                messagebox.showerror("Ошибка", "Неверный пароль")
+                return
+
+            messagebox.showinfo("Успех", "Вход выполнен")
+            
+            # Закрываем все текущие окна
+            self.parent.destroy()  # Уничтожаем AuthWindow
+            self.destroy()
+            
+            # Создаем новое корневое окно
+            new_root = tk.Tk()
+            MainApp(new_root)
+            new_root.mainloop()
+
+        except sqlite3.Error as e:
+            messagebox.showerror("Ошибка БД", str(e))
+        finally:
+            cursor.close()
+
 class MainApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -220,6 +387,11 @@ class MainApp(tk.Tk):
         self.style.configure('TButton', font=('Arial', 12), padding=10)
         
         self.create_widgets()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def on_close(self):
+        self.destroy()
+        sys.exit()
 
     def create_widgets(self):
         frame = ttk.Frame(self)
@@ -1163,5 +1335,7 @@ class FileWindow(tk.Toplevel):
         
 
 if __name__ == "__main__":
-    app = MainApp()
-    app.mainloop()
+    root = tk.Tk()
+    root.withdraw()
+    auth_window = AuthWindow(root)
+    auth_window.mainloop()
