@@ -154,8 +154,7 @@ class DatabaseHandler:
     def get_table_name(self, file_type):
         return {
             1: 'contracts',
-            2: 'agreements',
-            3: 'permits'
+            2: 'agreements'
         }[file_type]
     
     def get_all_records(self, file_type, columns=None):
@@ -237,11 +236,6 @@ class MainApp(tk.Tk):
                         text="РЕЕСТР соглашений о перераспр.", 
                         command=lambda: FileWindow(self, 2))
         btn2.pack(pady=10, fill='x')
-        
-        btn3 = ttk.Button(frame, 
-                        text="РЕЕСТР разрешений на использование ЗУ", 
-                        command=lambda: FileWindow(self, 3))
-        btn3.pack(pady=10, fill='x')
 
 class FileWindow(tk.Toplevel):
     expected_columns = {
@@ -287,8 +281,7 @@ class FileWindow(tk.Toplevel):
             'оплачено пеней',
             'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)',
             'Возврат имеющейся переплаты'
-        ],
-        3: ['Номер', 'ЗУ', 'Заявитель', 'Период']
+        ]
     }  
     date_columns = {
         1: [
@@ -297,8 +290,11 @@ class FileWindow(tk.Toplevel):
             'Фактическая дата оплаты',
             'Дата выписки учета поступлений, № ПП'
         ],
-        2: [],
-        3: []
+        2: [
+        'Дата заключения',
+        'Срок оплаты',
+        'Фактическая дата оплаты'
+        ]
     }
     
     def show_tooltip(self, event):
@@ -409,7 +405,11 @@ class FileWindow(tk.Toplevel):
             return 0
 
     def configure_ui(self):
-        self.title(f"Реестр типа {self.file_type}")
+        titles = {
+        1: "Реестр договоров купли-продажи земельных участков, гос. собств-ть на кот. не разграничена",
+        2: "Реестр соглашений о перераспр. земель, гос. собств-ть на кот. не разграничена"
+        }
+        self.title(titles[self.file_type])
         self.geometry("1400x800")
         self.style.configure("Red.Treeview", background="#ffcccc")
         self.style.configure("Yellow.Treeview", background="#ffffcc")
@@ -715,6 +715,16 @@ class FileWindow(tk.Toplevel):
                     df[col] = df[col].astype(str).str.replace(r'\.0$', '', regex=True)
                     df[col] = df[col].replace('nan', '')
 
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.replace(r'\s+', '', regex=True)
+                    df[col] = df[col].str.replace(',', '.', regex=False)
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            
+            # Обработка дат
+            for col in date_columns:
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce').dt.strftime('%d.%m.%Y')
             # Замена NaN на None
             df = df.where(pd.notnull(df), None)
 
@@ -794,8 +804,7 @@ class FileWindow(tk.Toplevel):
             date_columns = {
                 1: ['Дата заключения договора', 'Срок оплаты по договору', 
                     'Фактическая дата оплаты', 'Дата выписки учета поступлений, № ПП'],
-                2: [],
-                3: []
+                2: []
             }.get(self.file_type, [])
             
             for col in date_columns:
@@ -819,15 +828,18 @@ class FileWindow(tk.Toplevel):
             tags = []
             calculated_values = {}
             try:
-                if self.file_type == 1:
-                    # Используем значения из базы данных
+                if self.file_type in [1, 2]:  # Обрабатываем оба реестра
                     calculated_values = {
                         'Контроль по дате ("-" - просрочка)': record_dict.get('Контроль по дате ("-" - просрочка)', 0),
-                        'Контроль по оплате цены ("-" - переплата; "+" - недоплата)': record_dict.get('Контроль по оплате цены ("-" - переплата; "+" - недоплата)', 0),
+                        'Контроль по оплате цены ("-" - переплата; "+" - недоплата)': (
+                            record_dict.get('Контроль по оплате цены ("-" - переплата; "+" - недоплата)', 0)
+                            if self.file_type == 1 else 
+                            record_dict.get('Контроль по оплате цены ("-" - переплата; "+" - недоплата)', 0)
+                        ),
                         'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)': record_dict.get('неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)', 0)
                     }
 
-                    # Проверка условий подсветки
+                    # Проверка условий подсветки для обоих реестров
                     days_diff = record_dict.get('Контроль по дате ("-" - просрочка)', 0) or 0
                     payment_diff = record_dict.get('Контроль по оплате цены ("-" - переплата; "+" - недоплата)', 0) or 0
                     
@@ -1117,17 +1129,24 @@ class FileWindow(tk.Toplevel):
                 df['Контроль по оплате цены ("-" - переплата; "+" - недоплата)'] = df.apply(self.calculate_payment_diff, axis=1)
                 df['неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'] = df.apply(self.calculate_peni_diff, axis=1)
             elif self.file_type == 2:
+                # Форматирование числовых колонок
                 num_cols = [
                     'Размер платы за увеличение площади ЗУ, руб.',
                     'Оплачено',
                     'начисленные ПЕНИ',
                     'оплачено пеней'
                 ]
+                for col in num_cols:
+                    df[col] = df[col].apply(lambda x: f"{x:,.2f}".replace(',', ' ').replace('.', ',') if pd.notnull(x) else '')
+                
+                # Форматирование дат
                 date_cols = [
                     'Дата заключения',
                     'Срок оплаты',
                     'Фактическая дата оплаты'
                 ]
+                for col in date_cols:
+                    df[col] = pd.to_datetime(df[col]).dt.strftime('%d.%m.%Y')
 
             df.to_excel(file_path, index=False, engine='openpyxl')
             messagebox.showinfo("Успех", "Файл успешно сохранен!")
