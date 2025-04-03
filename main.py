@@ -291,9 +291,9 @@ class FileWindow(tk.Toplevel):
             'Дата выписки учета поступлений, № ПП'
         ],
         2: [
-        'Дата заключения',
-        'Срок оплаты',
-        'Фактическая дата оплаты'
+            'Дата заключения',
+            'Срок оплаты',
+            'Фактическая дата оплаты'
         ]
     }
     
@@ -1019,22 +1019,29 @@ class FileWindow(tk.Toplevel):
         if col_index < 0 or col_index >= len(self.expected_columns[self.file_type]):
             return
         col_name = self.expected_columns[self.file_type][col_index]
+        
+        # Проверяем является ли колонка датой для текущего типа реестра
+        date_columns = self.date_columns.get(self.file_type, [])
+        
         if col_name in self.parent.db.calculated_columns.get(self.file_type, []):
             messagebox.showinfo("Информация", "Это поле рассчитывается автоматически и не может быть изменено вручную.")
             return
+        
         current_value = self.tree.item(item, 'values')[col_index + 1]
         edit_win = tk.Toplevel(self)
         edit_win.title("Редактирование")
-        edit_win.geometry("400x150")
+        edit_win.geometry("400x200")  # Увеличим высоту для календаря
         
         record_id = int(self.tree.item(item, 'values')[0])
         entry = ttk.Entry(edit_win, font=('Arial', 12), width=30)
         entry.pack(padx=20, pady=20, fill='x', expand=True)
         entry.insert(0, current_value)
 
-        if col_name in self.date_columns.get(self.file_type, []):
+        # Добавляем календарь для дат
+        if col_name in date_columns:
             self.create_calendar(edit_win, entry, col_name)
         
+        # Остальной код без изменений...
         if col_name == 'Номер договора':
             entry.insert(0, "Только целые числа")
             entry.config(foreground='grey')
@@ -1048,16 +1055,16 @@ class FileWindow(tk.Toplevel):
         btn_frame.pack(fill='x', padx=20, pady=10)
 
         ttk.Button(btn_frame, 
-                 text="Сохранить", 
-                 command=lambda: self.save_edit(entry.get(), record_id, col_name, edit_win)
-                 ).pack(side='right')
-                 
+                text="Сохранить", 
+                command=lambda: self.save_edit(entry.get(), record_id, col_name, edit_win)
+                ).pack(side='right')
+                
         ttk.Button(btn_frame, 
-                 text="Отмена", 
-                 command=edit_win.destroy
-                 ).pack(side='right', padx=5)
+                text="Отмена", 
+                command=edit_win.destroy
+                ).pack(side='right', padx=5)
 
-        # Добавляем валидацию для числовых полей
+        # Валидация для числовых полей
         if col_name in ['Цена ЗУ по договору, руб.', 'Оплачено', 'начисленные ПЕНИ', 'оплачено пеней']:
             validate_cmd = (edit_win.register(self.validate_number), '%P')
             entry.configure(validate='key', validatecommand=validate_cmd)
