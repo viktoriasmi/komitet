@@ -31,7 +31,10 @@ class DatabaseHandler:
                     'id INTEGER PRIMARY KEY AUTOINCREMENT',
                     'fio TEXT NOT NULL',
                     'login TEXT UNIQUE NOT NULL',
-                    'password TEXT NOT NULL'
+                    'password TEXT NOT NULL',
+                    'is_admin BOOLEAN NOT NULL DEFAULT 0',
+                    'can_edit_1 BOOLEAN NOT NULL DEFAULT 0',
+                    'can_edit_2 BOOLEAN NOT NULL DEFAULT 0'
                 ],
                 'contracts': [
                 'id INTEGER PRIMARY KEY AUTOINCREMENT',
@@ -347,26 +350,32 @@ class LoginDialog(tk.Toplevel):
         cursor = db.conn.cursor()
         try:
             cursor.execute(
-                "SELECT password FROM users WHERE login = ?",
+                "SELECT id, fio, login, password, is_admin, can_edit_1, can_edit_2 "
+                "FROM users WHERE login = ?",
                 (login,)
             )
             result = cursor.fetchone()
             if not result:
                 messagebox.showerror("Ошибка", "Неверный логин или пароль")
                 return
-
+            user_id, fio, login, stored_hash, is_admin, can_edit_1, can_edit_2 = result
             hashed_password = hashlib.sha256(f"salt{password}".encode()).hexdigest()
-            if result[0] != hashed_password:
+            # Исправленная проверка пароля
+            if stored_hash != hashed_password:
                 messagebox.showerror("Ошибка", "Неверный пароль")
                 return
 
             messagebox.showinfo("Успех", "Вход выполнен")
             
             # Закрываем все текущие окна
-            self.parent.destroy()  # Уничтожаем AuthWindow
+            self.parent.destroy()
             self.destroy()
-            
-            app = MainApp()
+            app = MainApp({
+                'id': user_id,
+                'is_admin': bool(is_admin),
+                'can_edit_1': bool(can_edit_1),
+                'can_edit_2': bool(can_edit_2)
+            })
             app.mainloop()
 
         except sqlite3.Error as e:
@@ -375,17 +384,20 @@ class LoginDialog(tk.Toplevel):
             cursor.close()
 
 class MainApp(tk.Tk):
-    def __init__(self):
+    def __init__(self, user_info):
         super().__init__()
         self.title("Реестры комитета")
         self.geometry("600x400")
         self.db = DatabaseHandler()
+        self.user_info = user_info
         
         self.style = ttk.Style()
         self.style.configure('TButton', font=('Arial', 12), padding=10)
-        
         self.create_widgets()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def open_admin_panel(self):
+        AdminWindow(self)
 
     def on_close(self):
         self.destroy()
@@ -397,15 +409,120 @@ class MainApp(tk.Tk):
         
         ttk.Label(frame, text="Выберите тип реестра:", font=('Arial', 14)).pack(pady=20)
         
+        # Кнопки реестров с проверкой прав
+        btn1_state = 'normal' if self.user_info['can_edit_1'] or self.user_info['is_admin'] else 'disabled'
         btn1 = ttk.Button(frame, 
                         text="РЕЕСТР договоров купли-продажи", 
-                        command=lambda: FileWindow(self, 1))
+                        command=lambda: FileWindow(self, 1),
+                        state=btn1_state)
         btn1.pack(pady=10, fill='x')
         
+        btn2_state = 'normal' if self.user_info['can_edit_2'] or self.user_info['is_admin'] else 'disabled'
         btn2 = ttk.Button(frame, 
                         text="РЕЕСТР соглашений о перераспр.", 
-                        command=lambda: FileWindow(self, 2))
+                        command=lambda: FileWindow(self, 2),
+                        state=btn2_state)
         btn2.pack(pady=10, fill='x')
+
+        # Кнопка админ-панели
+        if self.user_info['is_admin']:
+            ttk.Button(frame, 
+                     text="Управление пользователями", 
+                     command=self.open_admin_panel
+                     ).pack(pady=20)
+
+class AdminWindow(tk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Управление пользователями")
+        self.geometry("1000x600")
+        self.db = DatabaseHandler()
+        self.create_widgets()
+        self.load_users()
+
+    def create_widgets(self):
+        container = ttk.Frame(self)
+        container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Treeview для отображения пользователей
+        self.tree = ttk.Treeview(container, columns=('fio', 'login', 'admin', 'edit1', 'edit2'), show='headings')
+        
+        # Настройка колонок
+        self.tree.heading('fio', text='ФИО')
+        self.tree.heading('login', text='Логин')
+        self.tree.heading('admin', text='Админ')
+        self.tree.heading('edit1', text='Реестр 1')
+        self.tree.heading('edit2', text='Реестр 2')
+        
+        self.tree.column('fio', width=200)
+        self.tree.column('login', width=150)
+        self.tree.column('admin', width=80, anchor='center')
+        self.tree.column('edit1', width=80, anchor='center')
+        self.tree.column('edit2', width=80, anchor='center')
+        
+        vsb = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        
+        self.tree.grid(row=0, column=0, sticky='nsew')
+        vsb.grid(row=0, column=1, sticky='ns')
+        hsb.grid(row=1, column=0, sticky='ew')
+        
+        # Кнопка сохранения
+        btn_frame = ttk.Frame(container)
+        btn_frame.grid(row=2, columnspan=2, pady=10)
+        ttk.Button(btn_frame, text="Сохранить изменения", command=self.save_changes).pack(side='right')
+        
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
+        
+        # Привязка двойного клика для редактирования
+        self.tree.bind('<Double-1>', self.on_edit)
+
+    def load_users(self):
+        self.tree.delete(*self.tree.get_children())
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT id, fio, login, is_admin, can_edit_1, can_edit_2 FROM users")
+        for row in cursor.fetchall():
+            self.tree.insert('', 'end', 
+                            values=(row[1], row[2], 
+                                   '✓' if row[3] else '✗',
+                                   '✓' if row[4] else '✗',
+                                   '✓' if row[5] else '✗'),
+                            tags=(row[0],))
+    
+    def on_edit(self, event):
+        item = self.tree.selection()[0]
+        column = self.tree.identify_column(event.x)
+        
+        if column in ['#4', '#5', '#6']:  # Колонки с правами
+            user_id = self.tree.item(item, 'tags')[0]
+            current_value = self.tree.set(item, column)
+            new_value = '✓' if current_value == '✗' else '✗'
+            self.tree.set(item, column, new_value)
+    
+    def save_changes(self):
+        cursor = self.db.conn.cursor()
+        for item in self.tree.get_children():
+            user_id = self.tree.item(item, 'tags')[0]
+            values = self.tree.item(item, 'values')
+            
+            updates = {
+                'is_admin': 1 if values[2] == '✓' else 0,
+                'can_edit_1': 1 if values[3] == '✓' else 0,
+                'can_edit_2': 1 if values[4] == '✓' else 0
+            }
+            
+            cursor.execute('''UPDATE users SET
+                is_admin = ?,
+                can_edit_1 = ?,
+                can_edit_2 = ?
+                WHERE id = ?''',
+                (updates['is_admin'], updates['can_edit_1'], updates['can_edit_2'], user_id))
+        
+        self.db.conn.commit()
+        messagebox.showinfo("Сохранено", "Изменения успешно сохранены!")
 
 class FileWindow(tk.Toplevel):
     expected_columns = {
@@ -540,6 +657,7 @@ class FileWindow(tk.Toplevel):
         
         self.configure_ui()
         self.create_widgets()
+        self.user_info = parent.user_info
         self.create_toolbar()
         self.setup_tags()
         self.update_treeview()
@@ -548,6 +666,11 @@ class FileWindow(tk.Toplevel):
         self.tooltip = None
         self.tooltip_timer = None
     
+    def has_permission(self):
+        return (self.user_info['is_admin'] or 
+               (self.file_type == 1 and self.user_info['can_edit_1']) or 
+               (self.file_type == 2 and self.user_info['can_edit_2']))
+
     def calculate_days_diff(self, row):
         try:
             due_date = datetime.strptime(row['Срок оплаты по договору'], "%d.%m.%Y")
@@ -759,10 +882,21 @@ class FileWindow(tk.Toplevel):
         toolbar = ttk.Frame(self)
         toolbar.pack(fill='x', padx=5, pady=5)
         
-        ttk.Button(toolbar, text="Загрузить файл", command=self.load_file).pack(side='left', padx=2)
-        ttk.Button(toolbar, text="Создать новый", command=self.create_new).pack(side='left', padx=2)
-        ttk.Button(toolbar, text="Сохранить", command=self.save_file).pack(side='right', padx=2)
+        btn_load = ttk.Button(toolbar, text="Загрузить файл", 
+                            command=self.load_file,
+                            state='normal' if self.has_permission() else 'disabled')
+        btn_load.pack(side='left', padx=2)
         
+        btn_new = ttk.Button(toolbar, text="Создать новый", 
+                           command=self.create_new,
+                           state='normal' if self.has_permission() else 'disabled')
+        btn_new.pack(side='left', padx=2)
+        
+        btn_save = ttk.Button(toolbar, text="Сохранить", 
+                            command=self.save_file,
+                            state='normal' if self.has_permission() else 'disabled')
+        btn_save.pack(side='right', padx=2)
+
         # Поле поиска
         search_frame = ttk.Frame(toolbar)
         search_frame.pack(side='right', padx=10)
@@ -777,7 +911,7 @@ class FileWindow(tk.Toplevel):
         search_combo = ttk.Combobox(search_frame, textvariable=self.column_var, 
                                    values=columns, state='readonly')
         search_combo.pack(side='left')
-        search_combo.current(0)
+        search_combo.current(0) 
 
     def load_file(self):
         file_path = filedialog.askopenfilename(
@@ -1081,6 +1215,9 @@ class FileWindow(tk.Toplevel):
 
     def save_edit(self, new_value, record_id, col_name, edit_win):
         try:
+            if not self.has_permission():
+                messagebox.showwarning("Доступ запрещен")
+                return
             processed_value = None
             # Обработка числовых полей
             if col_name in ['Цена ЗУ по договору, руб.', 'Оплачено', 
@@ -1183,6 +1320,10 @@ class FileWindow(tk.Toplevel):
         if region != "cell":
             return
         
+        if not self.has_permission():
+            messagebox.showwarning("Доступ запрещен")
+            return
+
         item = self.tree.identify_row(event.y)
         column = self.tree.identify_column(event.x)
         col_index = int(column[1:]) - 2  # Изменено с -1 на -2
