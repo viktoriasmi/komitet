@@ -183,10 +183,12 @@ class DatabaseHandler:
     
     def get_all_records(self, file_type, columns=None):
         table = self.get_table_name(file_type)
-        if columns:
-            columns_str = ', '.join([f'"{col}"' for col in columns])
-        else:
+        # Добавляем столбец "Редактор" в выборку
+        if columns is None:
             columns_str = '*'
+        else:
+            columns_str = ', '.join([f'"{col}"' for col in columns]) + ', "Редактор"'
+        
         with self.conn:
             cursor = self.conn.cursor()
             cursor.execute(f'SELECT {columns_str} FROM {table}')
@@ -1146,72 +1148,43 @@ class FileWindow(tk.Toplevel):
         
         for record in records:
             record_id = record[0]
-            record_dict = dict(zip(self.expected_columns[self.file_type], record[1:]))
-            tags = []
-            calculated_values = {}
-            editor_id = record[-1] if len(record) > 0 else None
-            editor_name = self.parent.db.get_user_fio(editor_id) if editor_id else ""
+            # Преобразуем запись в список для модификации
+            record_list = list(record)
             
-            # Формируем значения для отображения
-            values = [record[0]]  # ID записи
-            values += [str(item) for item in record[1:-1]]  # Основные данные
-            values.append(editor_name)  # ФИО редактора
+            # Заменяем ID редактора на ФИО
+            editor_id = record_list[-1]  # Последний элемент - ID редактора
+            editor_name = self.parent.db.get_user_fio(editor_id) if editor_id else ""
+            record_list[-1] = editor_name  # Заменяем ID на ФИО
+            
+            tags = []
             try:
-                if self.file_type in [1, 2]:  # Обрабатываем оба реестра
-                    calculated_values = {
-                        'Контроль по дате ("-" - просрочка)': record_dict.get('Контроль по дате ("-" - просрочка)', 0),
-                        'Контроль по оплате цены ("-" - переплата; "+" - недоплата)': (
-                            record_dict.get('Контроль по оплате цены ("-" - переплата; "+" - недоплата)', 0)
-                            if self.file_type == 1 else 
-                            record_dict.get('Контроль по оплате цены ("-" - переплата; "+" - недоплата)', 0)
-                        ),
-                        'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)': record_dict.get('неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)', 0)
-                    }
-
-                    # Проверка условий подсветки для обоих реестров
-                    days_diff = record_dict.get('Контроль по дате ("-" - просрочка)', 0) or 0
-                    payment_diff = record_dict.get('Контроль по оплате цены ("-" - переплата; "+" - недоплата)', 0) or 0
-                    
-                    if days_diff < 0:
-                        tags.append('overdue')
-                    if payment_diff > 0:
-                        tags.append('warning')
+                # Рассчитываем условия подсветки
+                days_diff = float(record_list[self.expected_columns[self.file_type].index('Контроль по дате ("-" - просрочка)') + 1])
+                payment_diff = float(record_list[self.expected_columns[self.file_type].index('Контроль по оплате цены ("-" - переплата; "+" - недоплата)') + 1])
+                
+                if days_diff < 0:
+                    tags.append('overdue')
+                if payment_diff > 0:
+                    tags.append('warning')
             except Exception as e:
                 print(f"Ошибка расчетов: {e}")
 
-            # Формируем финальные значения
-            final_values = []
-            for col in self.expected_columns[self.file_type]:
-                if col in calculated_values:
-                    value = calculated_values[col]
-                    if isinstance(value, float):
-                        final_values.append(f"{value:.2f}".replace('.', ','))
-                    else:
-                        final_values.append(str(value))
-                else:
-                    value = record_dict.get(col, '')
-                    if value is None:
-                        final_values.append('')
-                    else:
-                        if col in ['Цена ЗУ по договору, руб.', 'Оплачено', 
-                                'начисленные ПЕНИ', 'оплачено пеней']:
-                            try:
-                                final_values.append(f"{float(value):,.2f}".replace(',', ' ').replace('.', ','))
-                            except:
-                                final_values.append(str(value))
-                        else:
-                            final_values.append(str(value))
-            for col in self.tree["columns"][1:]:  # Пропускаем 'id'
-                max_len = max(
-                    [len(str(self.tree.set(child, col))) 
-                    for child in self.tree.get_children('')] + [len(col)]
-                )
-                self.tree.column(col, width=int(max_len * 8.5))  # Эмпирический коэффициент
+            # Формируем значения для вставки (пропускаем скрытый ID записи)
+            values = [str(x) if x is not None else "" for x in record_list[1:]]
+            
+            # Вставляем одну запись
+            self.tree.insert('', 'end', values=[record_id] + values, tags=tags)
+            
+        # Обновляем ширину колонок
+        for col in self.tree["columns"][1:]:  # Пропускаем 'id'
+            max_len = max(
+                [len(str(self.tree.set(child, col))) 
+                for child in self.tree.get_children('')] + [len(col)]
+            )
+            self.tree.column(col, width=int(max_len * 8.5))
 
-            # Обновляем цвета строк
-            self.update_row_colors()
-            self.tree.insert('', 'end', values=[record_id] + final_values, tags=tags)
-            self.tree.insert('', 'end', values=values, tags=tags)
+        # Обновляем цвета строк
+        self.update_row_colors()
     
 
     def create_calendar(self, parent, entry, col_name):
