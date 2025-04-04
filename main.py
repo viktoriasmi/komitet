@@ -366,10 +366,8 @@ class LoginDialog(tk.Toplevel):
             self.parent.destroy()  # Уничтожаем AuthWindow
             self.destroy()
             
-            # Создаем новое корневое окно
-            new_root = tk.Tk()
-            MainApp(new_root)
-            new_root.mainloop()
+            app = MainApp()
+            app.mainloop()
 
         except sqlite3.Error as e:
             messagebox.showerror("Ошибка БД", str(e))
