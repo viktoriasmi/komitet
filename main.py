@@ -24,7 +24,14 @@ class DatabaseHandler:
         ]
         }
         self.create_tables()
-        
+    
+    def get_user_fio(self, user_id):
+        with self.conn:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT fio FROM users WHERE id = ?", (user_id,))
+            result = cursor.fetchone()
+            return result[0] if result else "Неизвестный"
+
     def create_tables(self):
         tables = {
                 'users': [
@@ -57,7 +64,8 @@ class DatabaseHandler:
                 '"Возврат имеющейся переплаты" TEXT',
                 '"Контроль по дате (""-"" - просрочка)" REAL',
                 '"Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" REAL',
-                '"неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" REAL'
+                '"неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" REAL',
+                '"Редактор" INTEGER REFERENCES users(id)'
             ],
             'agreements': [
                 'id INTEGER PRIMARY KEY AUTOINCREMENT',
@@ -78,79 +86,85 @@ class DatabaseHandler:
                 '"начисленные ПЕНИ" REAL',
                 '"оплачено пеней" REAL',
                 '"неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" REAL',
-                '"Возврат имеющейся переплаты" TEXT'
+                '"Возврат имеющейся переплаты" TEXT',
+                '"Редактор" INTEGER REFERENCES users(id)'
             ]
         }
         triggers = [
-        '''CREATE TRIGGER IF NOT EXISTS update_due_date AFTER UPDATE OF "Дата заключения договора" ON contracts
-        BEGIN
-            UPDATE contracts SET
-                "Срок оплаты по договору" = 
-                    strftime('%d.%m.%Y', 
-                        date(
-                            substr(NEW."Дата заключения договора", 7, 4) || '-' ||
-                            substr(NEW."Дата заключения договора", 4, 2) || '-' ||
-                            substr(NEW."Дата заключения договора", 1, 2),
-                            '+7 days'
+            '''CREATE TRIGGER IF NOT EXISTS update_due_date AFTER UPDATE OF "Дата заключения договора" ON contracts
+            BEGIN
+                UPDATE contracts SET
+                    "Срок оплаты по договору" = 
+                        strftime('%d.%m.%Y', 
+                            date(
+                                substr(NEW."Дата заключения договора", 7, 4) || '-' ||
+                                substr(NEW."Дата заключения договора", 4, 2) || '-' ||
+                                substr(NEW."Дата заключения договора", 1, 2),
+                                '+7 days'
+                            )
                         )
-                    )
-            WHERE id = NEW.id;
-        END;''',
-        
-        '''CREATE TRIGGER IF NOT EXISTS update_control_date AFTER UPDATE ON contracts
-        BEGIN
-            UPDATE contracts SET 
-                "Контроль по дате (""-"" - просрочка)" = 
-                    julianday(
-                        substr(NEW."Срок оплаты по договору", 7, 4) || '-' ||
-                        substr(NEW."Срок оплаты по договору", 4, 2) || '-' ||
-                        substr(NEW."Срок оплаты по договору", 1, 2)
-                    ) - julianday(
-                        substr(NEW."Фактическая дата оплаты", 7, 4) || '-' ||
-                        substr(NEW."Фактическая дата оплаты", 4, 2) || '-' ||
-                        substr(NEW."Фактическая дата оплаты", 1, 2)
-                    ),
-                "Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" = 
-                    NEW."Цена ЗУ по договору, руб." - NEW."Оплачено",
-                "неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" = 
-                    NEW."начисленные ПЕНИ" - NEW."оплачено пеней"
-            WHERE id = NEW.id;
-        END;''',
-        
-        '''CREATE TRIGGER IF NOT EXISTS update_agreement_due_date AFTER UPDATE OF "Дата заключения" ON agreements
-        BEGIN
-            UPDATE agreements SET
-                "Срок оплаты" = 
-                    strftime('%d.%m.%Y', 
-                        date(
-                            substr(NEW."Дата заключения", 7, 4) || '-' ||
-                            substr(NEW."Дата заключения", 4, 2) || '-' ||
-                            substr(NEW."Дата заключения", 1, 2),
-                            '+7 days'
+                WHERE id = NEW.id;
+            END;''',
+            
+            '''CREATE TRIGGER IF NOT EXISTS update_control_date AFTER UPDATE ON contracts
+            BEGIN
+                UPDATE contracts SET 
+                    "Контроль по дате (""-"" - просрочка)" = 
+                        julianday(
+                            substr(NEW."Срок оплаты по договору", 7, 4) || '-' ||
+                            substr(NEW."Срок оплаты по договору", 4, 2) || '-' ||
+                            substr(NEW."Срок оплаты по договору", 1, 2)
+                        ) - julianday(
+                            substr(NEW."Фактическая дата оплаты", 7, 4) || '-' ||
+                            substr(NEW."Фактическая дата оплаты", 4, 2) || '-' ||
+                            substr(NEW."Фактическая дата оплаты", 1, 2)
+                        ),
+                    "Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" = 
+                        NEW."Цена ЗУ по договору, руб." - NEW."Оплачено",
+                    "неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" = 
+                        NEW."начисленные ПЕНИ" - NEW."оплачено пеней"
+                WHERE id = NEW.id;
+            END;''',
+            
+            '''CREATE TRIGGER IF NOT EXISTS update_agreement_due_date AFTER UPDATE OF "Дата заключения" ON agreements
+            BEGIN
+                UPDATE agreements SET
+                    "Срок оплаты" = 
+                        strftime('%d.%m.%Y', 
+                            date(
+                                substr(NEW."Дата заключения", 7, 4) || '-' ||
+                                substr(NEW."Дата заключения", 4, 2) || '-' ||
+                                substr(NEW."Дата заключения", 1, 2),
+                                '+7 days'
+                            )
                         )
-                    )
-            WHERE id = NEW.id;
-        END;''',
+                WHERE id = NEW.id;
+            END;''',
 
-        '''CREATE TRIGGER IF NOT EXISTS update_agreement_control AFTER UPDATE ON agreements
-        BEGIN
-            UPDATE agreements SET 
-                "Контроль по дате (""-"" - просрочка)" = 
-                    julianday(
-                        substr(NEW."Срок оплаты", 7, 4) || '-' ||
-                        substr(NEW."Срок оплаты", 4, 2) || '-' ||
-                        substr(NEW."Срок оплаты", 1, 2)
-                    ) - julianday(
-                        substr(NEW."Фактическая дата оплаты", 7, 4) || '-' ||
-                        substr(NEW."Фактическая дата оплаты", 4, 2) || '-' ||
-                        substr(NEW."Фактическая дата оплаты", 1, 2)
-                    ),
-                "Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" = 
-                    NEW."Размер платы за увеличение площади ЗУ, руб." - NEW."Оплачено",
-                "неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" = 
-                    NEW."начисленные ПЕНИ" - NEW."оплачено пеней"
-            WHERE id = NEW.id;
-        END;'''
+            '''CREATE TRIGGER IF NOT EXISTS update_agreement_control AFTER UPDATE ON agreements
+            BEGIN
+                UPDATE agreements SET 
+                    "Контроль по дате (""-"" - просрочка)" = 
+                        julianday(
+                            substr(NEW."Срок оплаты", 7, 4) || '-' ||
+                            substr(NEW."Срок оплаты", 4, 2) || '-' ||
+                            substr(NEW."Срок оплаты", 1, 2)
+                        ) - julianday(
+                            substr(NEW."Фактическая дата оплаты", 7, 4) || '-' ||
+                            substr(NEW."Фактическая дата оплаты", 4, 2) || '-' ||
+                            substr(NEW."Фактическая дата оплаты", 1, 2)
+                        ),
+                    "Контроль по оплате цены (""-"" - переплата; ""+"" - недоплата)" = 
+                        NEW."Размер платы за увеличение площади ЗУ, руб." - NEW."Оплачено",
+                    "неоплаченные ПЕНИ (""+"" - недоплата; ""-"" - переплата)" = 
+                        NEW."начисленные ПЕНИ" - NEW."оплачено пеней"
+                WHERE id = NEW.id;
+            END;''',
+
+            '''CREATE TRIGGER IF NOT EXISTS update_editor AFTER UPDATE ON contracts
+            BEGIN
+                UPDATE contracts SET "Редактор" = NEW."Редактор" WHERE id = NEW.id;
+            END;'''
         ]
         
         with self.conn:
@@ -547,7 +561,8 @@ class FileWindow(tk.Toplevel):
         # Расчетные колонки в конце
         'Контроль по дате ("-" - просрочка)',
         'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
-        'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'
+        'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)',
+        'Редактор'
         ],
         2: [
             '№ соглашения',
@@ -567,7 +582,8 @@ class FileWindow(tk.Toplevel):
             'начисленные ПЕНИ',
             'оплачено пеней',
             'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)',
-            'Возврат имеющейся переплаты'
+            'Возврат имеющейся переплаты',
+            'Редактор'
         ]
     }  
     date_columns = {
@@ -638,26 +654,26 @@ class FileWindow(tk.Toplevel):
         super().__init__(parent)
         self.parent = parent
         self.file_type = file_type
+        # Инициализация user_info и show_editor до создания виджетов
+        self.user_info = parent.user_info
+        self.show_editor = parent.user_info['is_admin']
         
-        # Инициализируем Style для этого окна
+        # Настройка стилей
         self.style = ttk.Style(self)
-        
-        # Настройки стилей должны быть ВЫШЕ создания виджетов
         self.style.configure("Treeview", 
-                           font=('Arial', 10), 
-                           rowheight=30,
-                           background="#ffffff",
-                           fieldbackground="#ffffff")
+                            font=('Arial', 10), 
+                            rowheight=30,
+                            background="#ffffff",
+                            fieldbackground="#ffffff")
         self.style.configure("Treeview.Heading", 
-                           font=('Arial', 10, 'bold'),
-                           background="#e1e1e1",
-                           relief="flat")
+                            font=('Arial', 10, 'bold'),
+                            background="#e1e1e1",
+                            relief="flat")
         self.style.map("Treeview.Heading", 
-                     background=[('active', '#d0d0d0')])
+                      background=[('active', '#d0d0d0')])
         
         self.configure_ui()
-        self.create_widgets()
-        self.user_info = parent.user_info
+        self.create_widgets()  # Теперь show_editor доступен здесь
         self.create_toolbar()
         self.setup_tags()
         self.update_treeview()
@@ -789,9 +805,11 @@ class FileWindow(tk.Toplevel):
         for col in self.tree["columns"]:
             if col == 'id':
                 self.tree.column(col, width=0, stretch=False)
+            elif col == 'Редактор' and not self.show_editor:
+                self.tree.column(col, width=0, stretch=False)  # Скрыть для не-админов
             else:
                 self.tree.heading(col, text=col, anchor='center')
-                self.tree.column(col, width=150, minwidth=100, stretch=True)  # Гибкая ширина
+                self.tree.column(col, width=150, minwidth=100, stretch=True)
         
         for col in self.tree["columns"][1:]:  # Пропускаем столбец 'id'
             self.tree.heading(col, 
@@ -1089,7 +1107,7 @@ class FileWindow(tk.Toplevel):
             
             # Создаем DataFrame с одной строкой
             df = pd.DataFrame([default_data], columns=expected)
-            
+            df['Редактор'] = self.parent.user_info['id']
             # Применяем преобразования как при импорте из Excel
             # Обработка числовых полей
             numeric_columns = {
@@ -1131,6 +1149,13 @@ class FileWindow(tk.Toplevel):
             record_dict = dict(zip(self.expected_columns[self.file_type], record[1:]))
             tags = []
             calculated_values = {}
+            editor_id = record[-1] if len(record) > 0 else None
+            editor_name = self.parent.db.get_user_fio(editor_id) if editor_id else ""
+            
+            # Формируем значения для отображения
+            values = [record[0]]  # ID записи
+            values += [str(item) for item in record[1:-1]]  # Основные данные
+            values.append(editor_name)  # ФИО редактора
             try:
                 if self.file_type in [1, 2]:  # Обрабатываем оба реестра
                     calculated_values = {
@@ -1182,10 +1207,11 @@ class FileWindow(tk.Toplevel):
                     for child in self.tree.get_children('')] + [len(col)]
                 )
                 self.tree.column(col, width=int(max_len * 8.5))  # Эмпирический коэффициент
-            
+
             # Обновляем цвета строк
             self.update_row_colors()
             self.tree.insert('', 'end', values=[record_id] + final_values, tags=tags)
+            self.tree.insert('', 'end', values=values, tags=tags)
     
 
     def create_calendar(self, parent, entry, col_name):
@@ -1236,8 +1262,20 @@ class FileWindow(tk.Toplevel):
                 processed_value = new_value.strip()
 
             # Обновление записи
-            self.parent.db.update_record(self.file_type, record_id, col_name, processed_value)
-            
+            self.parent.db.update_record(
+            self.file_type, 
+            record_id, 
+            col_name, 
+            processed_value
+            )
+
+            cursor = self.parent.db.conn.cursor()
+            cursor.execute(
+                f"UPDATE {self.parent.db.get_table_name(self.file_type)} "
+                "SET \"Редактор\" = ? WHERE id = ?",
+                (self.parent.user_info['id'], record_id)
+            )
+            self.parent.db.conn.commit()
             # Обновление интерфейса
             self.update_treeview()
             edit_win.destroy()
@@ -1466,6 +1504,9 @@ class FileWindow(tk.Toplevel):
                 for col in date_cols:
                     df[col] = pd.to_datetime(df[col]).dt.strftime('%d.%m.%Y')
 
+            if not self.parent.user_info['is_admin'] and 'Редактор' in df.columns:
+                df = df.drop(columns=['Редактор'])
+            
             df.to_excel(file_path, index=False, engine='openpyxl')
             messagebox.showinfo("Успех", "Файл успешно сохранен!")
             
