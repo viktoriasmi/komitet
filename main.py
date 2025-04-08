@@ -12,6 +12,9 @@ import re
 import pandas as pd
 from tkcalendar import Calendar
 from datetime import timedelta  
+import xml.etree.ElementTree as ET
+import shutil
+from datetime import datetime
 
 class DatabaseHandler:
     def __init__(self, db_name='registers.db'):
@@ -917,6 +920,10 @@ class FileWindow(tk.Toplevel):
                             state='normal' if self.has_permission() else 'disabled')
         btn_save.pack(side='right', padx=2)
 
+        btn_xml = ttk.Button(toolbar, text="Экспорт в XML", 
+                           command=self.generate_xml_report)
+        btn_xml.pack(side='left', padx=2)
+
         # Поле поиска
         search_frame = ttk.Frame(toolbar)
         search_frame.pack(side='right', padx=10)
@@ -932,6 +939,42 @@ class FileWindow(tk.Toplevel):
                                    values=columns, state='readonly')
         search_combo.pack(side='left')
         search_combo.current(0) 
+
+    def generate_xml_report(self):
+        try:
+            # Получаем данные из БД
+            df = self.parent.db.export_to_dataframe(self.file_type)
+            
+            # Создаем XML структуру
+            root = ET.Element('Реестр')
+            root.set('ВерсияФормата', '1.0')
+            root.set('ДатаФормирования', datetime.now().strftime('%d.%m.%Y'))
+
+            for _, row in df.iterrows():
+                record = ET.SubElement(root, 'Запись')
+                
+                for col in self.expected_columns[self.file_type]:
+                    # Пропускаем технические поля
+                    if col in ['Редактор', 'id']:
+                        continue
+                    
+                    field = ET.SubElement(record, col.replace(' ', ''))
+                    value = str(row[col]) if not pd.isna(row[col]) else ''
+                    field.text = value
+
+            # Сохраняем файл
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".xml",
+                filetypes=[("XML files", "*.xml")]
+            )
+            
+            if file_path:
+                tree = ET.ElementTree(root)
+                tree.write(file_path, encoding='utf-8', xml_declaration=True)
+                messagebox.showinfo("Успех", "XML-отчет успешно сформирован!")
+        
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Ошибка генерации XML: {str(e)}")
 
     def load_file(self):
         file_path = filedialog.askopenfilename(
@@ -1486,8 +1529,33 @@ class FileWindow(tk.Toplevel):
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
         
+def backup_database():
+    DB_NAME = 'registers.db'
+    BACKUP_DIR = 'backups'
+    
+    try:
+        # Создаем директорию для бэкапов
+        if not os.path.exists(BACKUP_DIR):
+            os.makedirs(BACKUP_DIR)
+        
+        # Генерируем имя файла с timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"{BACKUP_DIR}/registers_{timestamp}.bak"
+        
+        # Создаем соединение с базой для гарантии целостности
+        conn = sqlite3.connect(DB_NAME)
+        conn.backup(sqlite3.connect(backup_name))
+        conn.close()
+        
+        print(f"Backup created: {backup_name}")
+        return True
+    
+    except Exception as e:
+        print(f"Backup error: {str(e)}")
+        return False
 
 if __name__ == "__main__":
+    backup_database()
     root = tk.Tk()
     root.withdraw()
     auth_window = AuthWindow(root)

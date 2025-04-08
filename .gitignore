@@ -6836,3 +6836,4 @@
 .venv/Scripts/python.exe
 .venv/Scripts/pythonw.exe
 registers.db
+backups/
