@@ -5,6 +5,7 @@ import math
 import os
 import sqlite3
 import hashlib
+import shutil
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 from dateutil.parser import parse
@@ -13,7 +14,7 @@ import pandas as pd
 from tkcalendar import Calendar
 from datetime import timedelta  
 import xml.etree.ElementTree as ET
-import shutil
+from xml.sax.saxutils import escape
 from datetime import datetime
 
 class DatabaseHandler:
@@ -948,31 +949,48 @@ class FileWindow(tk.Toplevel):
             # Создаем XML структуру
             root = ET.Element('Реестр')
             root.set('ВерсияФормата', '1.0')
-            root.set('ДатаФормирования', datetime.now().strftime('%d.%m.%Y'))
+            root.set('ДатаФормирования', datetime.now().strftime('%Y-%m-%d'))  # Исправленный формат даты
 
             for _, row in df.iterrows():
                 record = ET.SubElement(root, 'Запись')
                 
                 for col in self.expected_columns[self.file_type]:
-                    # Пропускаем технические поля
                     if col in ['Редактор', 'id']:
                         continue
                     
-                    field = ET.SubElement(record, col.replace(' ', ''))
+                    # Генерируем валидное имя тега
+                    tag_name = re.sub(r'[^a-zA-Zа-яА-Я0-9_]', '_', col)
+                    tag_name = tag_name.strip('_').rstrip('_')
+                    
+                    # Заменяем множественные подчеркивания на одно
+                    tag_name = re.sub(r'_+', '_', tag_name)
+                    
+                    field = ET.SubElement(record, tag_name)
+                    
+                    # Обработка значений
                     value = str(row[col]) if not pd.isna(row[col]) else ''
-                    field.text = value
+                    field.text = escape(value)
 
-            # Сохраняем файл
+            # Сохраняем файл с правильной кодировкой
             file_path = filedialog.asksaveasfilename(
                 defaultextension=".xml",
                 filetypes=[("XML files", "*.xml")]
             )
             
             if file_path:
+                # Создаем дерево с правильным объявлением кодировки
                 tree = ET.ElementTree(root)
-                tree.write(file_path, encoding='utf-8', xml_declaration=True)
+                
+                # Принудительно записываем XML декларацию с кодировкой
+                with open(file_path, 'wb') as f:
+                    f.write('<?xml version="1.0" encoding="UTF-8"?>\n'.encode('utf-8'))
+                    tree.write(f, 
+                            encoding='utf-8',
+                            xml_declaration=False,  # Уже записали декларацию вручную
+                            method='xml')
+                
                 messagebox.showinfo("Успех", "XML-отчет успешно сформирован!")
-        
+
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка генерации XML: {str(e)}")
 
