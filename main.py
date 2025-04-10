@@ -245,6 +245,10 @@ class AuthWindow(tk.Toplevel):
         self.parent = parent
         self.title("Аутентификация")
         self.geometry("300x200")
+        try:
+            self.iconbitmap('icon.ico')  # Добавлено
+        except Exception as e:
+            print("Ошибка загрузки иконки:", e)
         self.create_widgets()
         self.grab_set()
 
@@ -267,6 +271,10 @@ class RegisterDialog(tk.Toplevel):
         self.parent = parent
         self.title("Регистрация")
         self.geometry("300x250")
+        try:
+            self.iconbitmap('icon.ico')  
+        except Exception as e:
+            print("Ошибка загрузки иконки:", e)
         self.create_widgets()
         self.grab_set()
 
@@ -337,6 +345,10 @@ class LoginDialog(tk.Toplevel):
         self.parent = parent
         self.title("Вход")
         self.geometry("300x150")
+        try:
+            self.iconbitmap('icon.ico')  
+        except Exception as e:
+            print("Ошибка загрузки иконки:", e)
         self.create_widgets()
         self.grab_set()
 
@@ -408,6 +420,10 @@ class MainApp(tk.Tk):
         super().__init__()
         self.title("Реестры комитета")
         self.geometry("600x400")
+        try:
+            self.iconbitmap('icon.ico')  
+        except Exception as e:
+            print("Ошибка загрузки иконки:", e)
         self.db = DatabaseHandler()
         self.user_info = user_info
         
@@ -457,6 +473,10 @@ class AdminWindow(tk.Toplevel):
         self.parent = parent
         self.title("Управление пользователями")
         self.geometry("1000x600")
+        try:
+            self.iconbitmap('icon.ico')  
+        except Exception as e:
+            print("Ошибка загрузки иконки:", e)
         self.db = DatabaseHandler()
         self.create_widgets()
         self.load_users()
@@ -679,7 +699,11 @@ class FileWindow(tk.Toplevel):
                       background=[('active', '#d0d0d0')])
         
         self.configure_ui()
-        self.create_widgets()  # Теперь show_editor доступен здесь
+        try:
+            self.iconbitmap('icon.ico')  
+        except Exception as e:
+            print("Ошибка загрузки иконки:", e)
+        self.create_widgets()  
         self.create_toolbar()
         self.setup_tags()
         self.update_treeview()
