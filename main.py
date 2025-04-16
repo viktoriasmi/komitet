@@ -17,6 +17,22 @@ import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 from datetime import datetime
 
+class CustomMessageBox(tk.Toplevel):
+    def __init__(self, parent, title, message, icon_path='icon.ico'):
+        super().__init__(parent)
+        self.title(title)
+        try:
+            self.iconbitmap(icon_path)
+        except Exception as e:
+            print("Ошибка загрузки иконки:", e)
+        
+        self.geometry("300x100")
+        self.resizable(False, False)
+        
+        ttk.Label(self, text=message).pack(pady=10)
+        ttk.Button(self, text="OK", command=self.destroy).pack(pady=5)
+        self.grab_set()
+
 class DatabaseHandler:
     def __init__(self, db_name='registers.db'):
         self.conn = sqlite3.connect(db_name)
@@ -323,15 +339,15 @@ class RegisterDialog(tk.Toplevel):
             return
 
         if password != confirm:
-            messagebox.showerror("Ошибка", "Пароли не совпадают")
+            CustomMessageBox(self, "Ошибка", "Пароли не совпадают").wait_window()
             return
 
         # Проверка сложности пароля
         if len(password) < 8:
-            messagebox.showerror("Ошибка", "Пароль должен содержать не менее 8 символов")
+            CustomMessageBox(self, "Ошибка", "Пароль должен содержать не менее 8 символов").wait_window()
             return
         if not re.search(r'[A-Za-z]', password) or not re.search(r'\d', password):
-            messagebox.showerror("Ошибка", "Пароль должен содержать буквы и цифры")
+            CustomMessageBox(self,"Ошибка", "Пароль должен содержать буквы и цифры").wait_window()
             return
 
         db = DatabaseHandler()
@@ -339,7 +355,7 @@ class RegisterDialog(tk.Toplevel):
         try:
             cursor.execute("SELECT login FROM users WHERE login = ?", (login,))
             if cursor.fetchone():
-                messagebox.showerror("Ошибка", "Логин уже занят")
+                CustomMessageBox(self, "Ошибка", "Логин уже занят").wait_window()
                 return
 
             hashed_password = hashlib.sha256(f"salt{password}".encode()).hexdigest()
@@ -391,7 +407,7 @@ class LoginDialog(tk.Toplevel):
         password = self.password_entry.get().strip()
 
         if not login or not password:
-            messagebox.showerror("Ошибка", "Введите логин и пароль")
+            CustomMessageBox(self, "Ошибка", "Введите логин и пароль").wait_window()
             return
 
         db = DatabaseHandler()
@@ -409,7 +425,7 @@ class LoginDialog(tk.Toplevel):
             user_id, fio, login, stored_hash, is_admin, can_edit_1, can_edit_2, login_attempts, is_locked = result
             
             if is_locked:
-                messagebox.showerror("Ошибка", "Учетная запись заблокирована. Обратитесь к администратору.")
+                CustomMessageBox(self, "Ошибка", "Учетная запись заблокирована").wait_window()
                 return
 
             hashed_password = hashlib.sha256(f"salt{password}".encode()).hexdigest()
@@ -508,7 +524,7 @@ class AdminWindow(tk.Toplevel):
         super().__init__(parent)
         self.parent = parent
         self.title("Управление пользователями")
-        self.geometry("1000x600")
+        self.geometry("1200x600")
         try:
             self.iconbitmap('icon.ico')  
         except Exception as e:
@@ -521,52 +537,110 @@ class AdminWindow(tk.Toplevel):
         container = ttk.Frame(self)
         container.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Treeview для отображения пользователей
-        self.tree = ttk.Treeview(container, columns=('fio', 'login', 'admin', 'edit1', 'edit2'), show='headings')
-        
-        # Настройка колонок
-        self.tree.heading('fio', text='ФИО')
-        self.tree.heading('login', text='Логин')
-        self.tree.heading('admin', text='Админ')
-        self.tree.heading('edit1', text='Реестр 1')
-        self.tree.heading('edit2', text='Реестр 2')
-        
-        self.tree.column('fio', width=200)
-        self.tree.column('login', width=150)
-        self.tree.column('admin', width=80, anchor='center')
-        self.tree.column('edit1', width=80, anchor='center')
-        self.tree.column('edit2', width=80, anchor='center')
+        # Treeview с прокрутками
+        self.tree = ttk.Treeview(
+            container,
+            columns=('fio', 'login', 'admin', 'edit1', 'edit2', 'attempts', 'locked'),
+            show='headings'
+        )
         
         vsb = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         
+
+        # Настройка колонок
+        columns_config = [
+            ('fio', 'ФИО', 200),
+            ('login', 'Логин', 150),
+            ('admin', 'Админ', 80),
+            ('edit1', 'Реестр 1', 80),
+            ('edit2', 'Реестр 2', 80),
+            ('attempts', 'Попытки', 80),
+            ('locked', 'Блокировка', 90)
+        ]
+        
+        for col, text, width in columns_config:
+            self.tree.heading(col, text=text)
+            anchor = 'center' if col in ['admin', 'edit1', 'edit2', 'attempts', 'locked'] else 'w'
+            self.tree.column(col, width=width, anchor=anchor)
+
+        # Размещение элементов
         self.tree.grid(row=0, column=0, sticky='nsew')
         vsb.grid(row=0, column=1, sticky='ns')
         hsb.grid(row=1, column=0, sticky='ew')
-        
-        # Кнопка сохранения
+
+        # Кнопки управления
         btn_frame = ttk.Frame(container)
-        btn_frame.grid(row=2, columnspan=2, pady=10)
-        ttk.Button(btn_frame, text="Сохранить изменения", command=self.save_changes).pack(side='right')
+        btn_frame.grid(row=2, column=0, columnspan=2, pady=10, sticky='ew')
         
+        ttk.Button(btn_frame, text="Разблокировать", command=self.unlock_user).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Сбросить попытки", command=self.reset_attempts).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="Сохранить изменения", command=self.save_changes).pack(side='right')
+
+        # Настройка расширения областей
         container.grid_rowconfigure(0, weight=1)
         container.grid_columnconfigure(0, weight=1)
-        
-        # Привязка двойного клика для редактирования
-        self.tree.bind('<Double-1>', self.on_edit)
 
     def load_users(self):
         self.tree.delete(*self.tree.get_children())
         cursor = self.db.conn.cursor()
-        cursor.execute("SELECT id, fio, login, is_admin, can_edit_1, can_edit_2 FROM users")
+        cursor.execute("SELECT id, fio, login, is_admin, can_edit_1, can_edit_2, login_attempts, is_locked FROM users")
         for row in cursor.fetchall():
             self.tree.insert('', 'end', 
-                            values=(row[1], row[2], 
-                                   '✓' if row[3] else '✗',
-                                   '✓' if row[4] else '✗',
-                                   '✓' if row[5] else '✗'),
+                values=(
+                    row[1],  # fio
+                    row[2],  # login
+                    '✓' if row[3] else '✗',  # admin
+                    '✓' if row[4] else '✗',  # edit1
+                    '✓' if row[5] else '✗',  # edit2
+                    row[6],  # attempts
+                    '✓' if row[7] else '✗'  # locked
+                ),
+                tags=(row[0],)
+            )
+
+    def load_users(self):
+        self.tree.delete(*self.tree.get_children())
+        cursor = self.db.conn.cursor()
+        # Обновляем запрос для получения новых полей
+        cursor.execute("SELECT id, fio, login, is_admin, can_edit_1, can_edit_2, login_attempts, is_locked FROM users")
+        for row in cursor.fetchall():
+            self.tree.insert('', 'end', 
+                            values=(
+                                row[1],  # fio
+                                row[2],  # login
+                                '✓' if row[3] else '✗',  # admin
+                                '✓' if row[4] else '✗',  # edit1
+                                '✓' if row[5] else '✗',  # edit2
+                                row[6],  # attempts
+                                '✓' if row[7] else '✗'  # locked
+                            ),
                             tags=(row[0],))
+
+    def unlock_user(self):
+        selected = self.tree.selection()
+        if not selected:
+            CustomMessageBox(self, "Ошибка", "Выберите пользователя!").wait_window()
+            return
+        
+        user_id = self.tree.item(selected[0], 'tags')[0]
+        with self.db.conn:
+            self.db.conn.execute("UPDATE users SET is_locked=0 WHERE id=?", (user_id,))
+        self.load_users()
+        CustomMessageBox(self, "Успех", "Пользователь разблокирован").wait_window()
+
+    def reset_attempts(self):
+        selected = self.tree.selection()
+        if not selected:
+            CustomMessageBox(self, "Ошибка", "Выберите пользователя!").wait_window()
+            return
+        
+        user_id = self.tree.item(selected[0], 'tags')[0]
+        with self.db.conn:
+            self.db.conn.execute("UPDATE users SET login_attempts=0 WHERE id=?", (user_id,))
+        self.load_users()
+        CustomMessageBox(self, "Успех", "Счетчик попыток сброшен").wait_window()
     
     def on_edit(self, event):
         item = self.tree.selection()[0]
