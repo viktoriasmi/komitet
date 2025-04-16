@@ -45,7 +45,9 @@ class DatabaseHandler:
                     'password TEXT NOT NULL',
                     'is_admin BOOLEAN NOT NULL DEFAULT 0',
                     'can_edit_1 BOOLEAN NOT NULL DEFAULT 0',
-                    'can_edit_2 BOOLEAN NOT NULL DEFAULT 0'
+                    'can_edit_2 BOOLEAN NOT NULL DEFAULT 0',
+                    'login_attempts INTEGER NOT NULL DEFAULT 0',  
+                    'is_locked BOOLEAN NOT NULL DEFAULT 0'
                 ],
                 'contracts': [
                 'id INTEGER PRIMARY KEY AUTOINCREMENT',
@@ -178,6 +180,12 @@ class DatabaseHandler:
                 cursor.execute(f'CREATE TABLE IF NOT EXISTS {table_name} ({columns_str})')
             for trigger in triggers:
                 cursor.execute(trigger)
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'login_attempts' not in columns:
+                cursor.execute("ALTER TABLE users ADD COLUMN login_attempts INTEGER NOT NULL DEFAULT 0")
+            if 'is_locked' not in columns:
+                cursor.execute("ALTER TABLE users ADD COLUMN is_locked BOOLEAN NOT NULL DEFAULT 0")
 
     def get_table_name(self, file_type):
         return {
@@ -318,6 +326,14 @@ class RegisterDialog(tk.Toplevel):
             messagebox.showerror("Ошибка", "Пароли не совпадают")
             return
 
+        # Проверка сложности пароля
+        if len(password) < 8:
+            messagebox.showerror("Ошибка", "Пароль должен содержать не менее 8 символов")
+            return
+        if not re.search(r'[A-Za-z]', password) or not re.search(r'\d', password):
+            messagebox.showerror("Ошибка", "Пароль должен содержать буквы и цифры")
+            return
+
         db = DatabaseHandler()
         cursor = db.conn.cursor()
         try:
@@ -382,7 +398,7 @@ class LoginDialog(tk.Toplevel):
         cursor = db.conn.cursor()
         try:
             cursor.execute(
-                "SELECT id, fio, login, password, is_admin, can_edit_1, can_edit_2 "
+                "SELECT id, fio, login, password, is_admin, can_edit_1, can_edit_2, login_attempts, is_locked "
                 "FROM users WHERE login = ?",
                 (login,)
             )
@@ -390,16 +406,36 @@ class LoginDialog(tk.Toplevel):
             if not result:
                 messagebox.showerror("Ошибка", "Неверный логин или пароль")
                 return
-            user_id, fio, login, stored_hash, is_admin, can_edit_1, can_edit_2 = result
-            hashed_password = hashlib.sha256(f"salt{password}".encode()).hexdigest()
-            # Исправленная проверка пароля
-            if stored_hash != hashed_password:
-                messagebox.showerror("Ошибка", "Неверный пароль")
+            user_id, fio, login, stored_hash, is_admin, can_edit_1, can_edit_2, login_attempts, is_locked = result
+            
+            if is_locked:
+                messagebox.showerror("Ошибка", "Учетная запись заблокирована. Обратитесь к администратору.")
                 return
 
+            hashed_password = hashlib.sha256(f"salt{password}".encode()).hexdigest()
+            if stored_hash != hashed_password:
+                new_attempts = login_attempts + 1
+                is_locked_new = new_attempts >= 5
+                cursor.execute(
+                    "UPDATE users SET login_attempts = ?, is_locked = ? WHERE id = ?",
+                    (new_attempts, is_locked_new, user_id)
+                )
+                db.conn.commit()
+                remaining = 5 - new_attempts
+                if is_locked_new:
+                    messagebox.showerror("Ошибка", "Учетная запись заблокирована после 5 неудачных попыток.")
+                else:
+                    messagebox.showerror("Ошибка", f"Неверный пароль. Осталось попыток: {remaining}")
+                return
+
+            # Сброс попыток при успешном входе
+            cursor.execute(
+                "UPDATE users SET login_attempts = 0, is_locked = 0 WHERE id = ?",
+                (user_id,)
+            )
+            db.conn.commit()
+
             messagebox.showinfo("Успех", "Вход выполнен")
-            
-            # Закрываем все текущие окна
             self.parent.destroy()
             self.destroy()
             app = MainApp({
@@ -703,7 +739,7 @@ class FileWindow(tk.Toplevel):
             self.iconbitmap('icon.ico')  
         except Exception as e:
             print("Ошибка загрузки иконки:", e)
-        self.create_widgets()  
+        self.create_widgets() 
         self.create_toolbar()
         self.setup_tags()
         self.update_treeview()
