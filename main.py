@@ -543,6 +543,8 @@ class AdminWindow(tk.Toplevel):
             print("Ошибка загрузки иконки:", e)
         self.db = DatabaseHandler()
         self.filter_status = tk.StringVar(value='Все')
+        self.search_var = tk.StringVar()
+        self.column_var = tk.StringVar()
         self.create_widgets()
         self.load_users()
 
@@ -550,22 +552,19 @@ class AdminWindow(tk.Toplevel):
         container = ttk.Frame(self)
         container.pack(fill='both', expand=True, padx=10, pady=10)
         
-        filter_frame = ttk.Frame(container)
-        filter_frame.grid(row=0, column=0, sticky='ew', pady=5)
-    
-        ttk.Label(filter_frame, text="Фильтр по статусу:").pack(side='left', padx=5)
+        # Верхняя панель фильтров
+        top_panel = ttk.Frame(container)
+        top_panel.grid(row=0, column=0, sticky='ew', pady=5)
         
-        filter_combo = ttk.Combobox(
-            filter_frame, 
-            textvariable=self.filter_status,
-            values=['Все', 'Активные', 'Заблокированные'],
-            state='readonly',
-            width=15
-        )
+        # Фильтр по статусу
+        ttk.Label(top_panel, text="Фильтр по статусу:").pack(side='left', padx=5)
+        filter_combo = ttk.Combobox(top_panel, textvariable=self.filter_status,
+                                   values=['Все', 'Активные', 'Заблокированные'],
+                                   state='readonly', width=15)
         filter_combo.pack(side='left', padx=5)
-        filter_combo.bind('<<ComboboxSelected>>', self.apply_filter)
+        filter_combo.bind('<<ComboboxSelected>>', lambda e: self.load_users())
 
-        # Treeview с прокрутками
+        # Основная таблица
         self.tree = ttk.Treeview(
             container,
             columns=('fio', 'login', 'admin', 'edit1', 'edit2', 'attempts', 'locked'),
@@ -575,8 +574,7 @@ class AdminWindow(tk.Toplevel):
         vsb = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        self.tree.bind('<ButtonRelease-1>', self.on_edit)
-
+        
         # Настройка колонок
         columns_config = [
             ('fio', 'ФИО', 200),
@@ -590,42 +588,92 @@ class AdminWindow(tk.Toplevel):
         
         for col, text, width in columns_config:
             self.tree.heading(col, text=text)
-            anchor = 'center' if col in ['admin', 'edit1', 'edit2', 'attempts', 'locked'] else 'w'
-            self.tree.column(col, width=width, anchor=anchor)
+            self.tree.column(col, width=width, anchor='center' if col in ['admin', 'edit1', 'edit2', 'attempts', 'locked'] else 'w')
 
         # Размещение элементов
-        self.tree.grid(row=0, column=0, sticky='nsew')
-        vsb.grid(row=0, column=1, sticky='ns')
-        hsb.grid(row=1, column=0, sticky='ew')
+        self.tree.grid(row=1, column=0, sticky='nsew')
+        vsb.grid(row=1, column=1, sticky='ns')
+        hsb.grid(row=2, column=0, sticky='ew')
+
+        # Панель поиска (внизу справа)
+        search_panel = ttk.Frame(container)
+        search_panel.grid(row=3, column=0, sticky='e', pady=5)
+        
+        ttk.Label(search_panel, text="Поиск:").pack(side='left', padx=5)
+        search_entry = ttk.Entry(search_panel, textvariable=self.search_var, width=25)
+        search_entry.pack(side='left', padx=5)
+        
+        ttk.Label(search_panel, text="в колонке:").pack(side='left', padx=5)
+        search_combo = ttk.Combobox(search_panel, textvariable=self.column_var,
+                                  values=['ФИО', 'Логин', 'Админ', 'Реестр 1', 'Реестр 2'],
+                                  state='readonly', width=15)
+        search_combo.pack(side='left', padx=5)
+        search_combo.current(0)
+        search_entry.bind('<KeyRelease>', self.apply_filter)
 
         # Кнопки управления
-        btn_frame = ttk.Frame(container)
-        btn_frame.grid(row=2, column=0, columnspan=2, pady=10, sticky='ew')
+        btn_panel = ttk.Frame(container)
+        btn_panel.grid(row=4, column=0, sticky='ew', pady=10)
         
-        ttk.Button(btn_frame, text="Разблокировать", command=self.unlock_user).pack(side='left', padx=5)
-        ttk.Button(btn_frame, text="Сбросить попытки", command=self.reset_attempts).pack(side='left', padx=5)
-        ttk.Button(btn_frame, text="Сохранить изменения", command=self.save_changes).pack(side='right')
+        ttk.Button(btn_panel, text="Разблокировать", command=self.unlock_user).pack(side='left', padx=5)
+        ttk.Button(btn_panel, text="Сбросить попытки", command=self.reset_attempts).pack(side='left', padx=5)
+        ttk.Button(btn_panel, text="Сохранить изменения", command=self.save_changes).pack(side='right')
 
-        # Настройка расширения областей
-        container.grid_rowconfigure(0, weight=1)
+        # Настройка весов для растягивания
+        container.grid_rowconfigure(1, weight=1)
         container.grid_columnconfigure(0, weight=1)
 
     def apply_filter(self, event=None):
-        """Обработчик применения фильтра"""
-        self.load_users()
+        query = self.search_var.get().strip().lower()
+        col = self.column_var.get()
+        
+        column_mapping = {
+            'ФИО': 0,
+            'Логин': 1,
+            'Админ': 2,
+            'Реестр 1': 3,
+            'Реестр 2': 4
+        }
+        
+        col_index = column_mapping.get(col, 1)  # По умолчанию ищем по Логину
+        bool_columns = {'Админ', 'Реестр 1', 'Реестр 2'}
+
+        for item in self.tree.get_children():
+            values = self.tree.item(item, 'values')
+            raw_value = str(values[col_index]).strip().lower()
+            
+            # Обработка булевых полей
+            if col in bool_columns:
+                search_map = {
+                    '1': '✓', '✓': '✓',
+                    '0': '✗', '✗': '✗',
+                    'да': '✓', 'нет': '✗'
+                }
+                search_value = search_map.get(query, query)
+                match = str(values[col_index]) == search_value
+            else:
+                # Для текстовых полей
+                match = query in raw_value
+            
+            # Обновление тегов
+            tags = list(self.tree.item(item, 'tags'))
+            tags = [t for t in tags if t not in ('match', 'nomatch')]
+            tags.append('match' if match else 'nomatch')
+            self.tree.item(item, tags=tags)
+        
+        self.tree.tag_configure('match', background='#90EE90')
+        self.tree.tag_configure('nomatch', background='gray90')
 
     def load_users(self):
         status = self.filter_status.get()
         self.tree.delete(*self.tree.get_children())
         cursor = self.db.conn.cursor()
-        query = """
-            SELECT id, fio, login, is_admin, can_edit_1, can_edit_2, login_attempts, is_locked 
-            FROM users
-        """
+        query = "SELECT * FROM users"
+        params = []
         if status == 'Активные':
-            query += " WHERE is_locked = 0"
+            query += " AND is_locked = 0"
         elif status == 'Заблокированные':
-            query += " WHERE is_locked = 1"
+            query += " AND is_locked = 1"
         
         cursor.execute(query)
         for row in cursor.fetchall():
