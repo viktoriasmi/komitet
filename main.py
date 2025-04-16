@@ -547,7 +547,7 @@ class AdminWindow(tk.Toplevel):
         vsb = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
         hsb = ttk.Scrollbar(container, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        
+        self.tree.bind('<ButtonRelease-1>', self.on_edit)
 
         # Настройка колонок
         columns_config = [
@@ -600,24 +600,6 @@ class AdminWindow(tk.Toplevel):
                 tags=(row[0],)
             )
 
-    def load_users(self):
-        self.tree.delete(*self.tree.get_children())
-        cursor = self.db.conn.cursor()
-        # Обновляем запрос для получения новых полей
-        cursor.execute("SELECT id, fio, login, is_admin, can_edit_1, can_edit_2, login_attempts, is_locked FROM users")
-        for row in cursor.fetchall():
-            self.tree.insert('', 'end', 
-                            values=(
-                                row[1],  # fio
-                                row[2],  # login
-                                '✓' if row[3] else '✗',  # admin
-                                '✓' if row[4] else '✗',  # edit1
-                                '✓' if row[5] else '✗',  # edit2
-                                row[6],  # attempts
-                                '✓' if row[7] else '✗'  # locked
-                            ),
-                            tags=(row[0],))
-
     def unlock_user(self):
         selected = self.tree.selection()
         if not selected:
@@ -646,7 +628,7 @@ class AdminWindow(tk.Toplevel):
         item = self.tree.selection()[0]
         column = self.tree.identify_column(event.x)
         
-        if column in ['#4', '#5', '#6']:  # Колонки с правами
+        if column in ['#3', '#4', '#5']:  # Колонки Admin, Edit1, Edit2
             user_id = self.tree.item(item, 'tags')[0]
             current_value = self.tree.set(item, column)
             new_value = '✓' if current_value == '✗' else '✗'
