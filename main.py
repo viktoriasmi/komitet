@@ -468,8 +468,8 @@ class LoginDialog(tk.Toplevel):
             cursor.close()
 
 class MainApp(tk.Tk):
-    def __init__(self, user_info):
-        super().__init__()
+    def __init__(self, user_info):  # Убираем параметр parent
+        super().__init__()  # Вызываем конструктор Tk без параметров
         self.title("Реестры комитета")
         self.geometry("600x400")
         try:
@@ -518,6 +518,18 @@ class MainApp(tk.Tk):
                      text="Управление пользователями", 
                      command=self.open_admin_panel
                      ).pack(pady=20)
+            
+        ttk.Button(frame, 
+                 text="Выход", 
+                 command=self.logout
+                 ).pack(pady=20)
+        
+    def logout(self):
+        self.destroy()  
+        root = tk.Tk()  
+        root.withdraw()
+        auth_window = AuthWindow(root)
+        auth_window.mainloop()
 
 class AdminWindow(tk.Toplevel):
     def __init__(self, parent):
@@ -530,6 +542,7 @@ class AdminWindow(tk.Toplevel):
         except Exception as e:
             print("Ошибка загрузки иконки:", e)
         self.db = DatabaseHandler()
+        self.filter_status = tk.StringVar(value='Все')
         self.create_widgets()
         self.load_users()
 
@@ -537,6 +550,21 @@ class AdminWindow(tk.Toplevel):
         container = ttk.Frame(self)
         container.pack(fill='both', expand=True, padx=10, pady=10)
         
+        filter_frame = ttk.Frame(container)
+        filter_frame.grid(row=0, column=0, sticky='ew', pady=5)
+    
+        ttk.Label(filter_frame, text="Фильтр по статусу:").pack(side='left', padx=5)
+        
+        filter_combo = ttk.Combobox(
+            filter_frame, 
+            textvariable=self.filter_status,
+            values=['Все', 'Активные', 'Заблокированные'],
+            state='readonly',
+            width=15
+        )
+        filter_combo.pack(side='left', padx=5)
+        filter_combo.bind('<<ComboboxSelected>>', self.apply_filter)
+
         # Treeview с прокрутками
         self.tree = ttk.Treeview(
             container,
@@ -582,10 +610,24 @@ class AdminWindow(tk.Toplevel):
         container.grid_rowconfigure(0, weight=1)
         container.grid_columnconfigure(0, weight=1)
 
+    def apply_filter(self, event=None):
+        """Обработчик применения фильтра"""
+        self.load_users()
+
     def load_users(self):
+        status = self.filter_status.get()
         self.tree.delete(*self.tree.get_children())
         cursor = self.db.conn.cursor()
-        cursor.execute("SELECT id, fio, login, is_admin, can_edit_1, can_edit_2, login_attempts, is_locked FROM users")
+        query = """
+            SELECT id, fio, login, is_admin, can_edit_1, can_edit_2, login_attempts, is_locked 
+            FROM users
+        """
+        if status == 'Активные':
+            query += " WHERE is_locked = 0"
+        elif status == 'Заблокированные':
+            query += " WHERE is_locked = 1"
+        
+        cursor.execute(query)
         for row in cursor.fetchall():
             self.tree.insert('', 'end', 
                 values=(
@@ -625,9 +667,12 @@ class AdminWindow(tk.Toplevel):
         CustomMessageBox(self, "Успех", "Счетчик попыток сброшен").wait_window()
     
     def on_edit(self, event):
-        item = self.tree.selection()[0]
+        selected = self.tree.selection()
+        if not selected:  # Проверяем, есть ли выбранный элемент
+            return
+        item = selected[0]
         column = self.tree.identify_column(event.x)
-        
+
         if column in ['#3', '#4', '#5']:  # Колонки Admin, Edit1, Edit2
             user_id = self.tree.item(item, 'tags')[0]
             current_value = self.tree.set(item, column)
@@ -869,8 +914,8 @@ class FileWindow(tk.Toplevel):
         
         # Обновляем цвета строк после сортировки
         self.update_row_colors()
-        # Повторно применяем фильтр после сортировки
-        self.filter_data()
+       
+        #self.filter_data()
 
     def update_row_colors(self):
         for i, child in enumerate(self.tree.get_children('')):
@@ -927,8 +972,10 @@ class FileWindow(tk.Toplevel):
         for col in self.tree["columns"]:
             if col == 'id':
                 self.tree.column(col, width=0, stretch=False)
+                self.tree.heading(col, text='', anchor='center')  # Добавьте это
             elif col == 'Редактор' and not self.show_editor:
-                self.tree.column(col, width=0, stretch=False)  # Скрыть для не-админов
+                self.tree.column(col, width=0, stretch=False)
+                self.tree.heading(col, text='')  # Скрываем заголовок
             else:
                 self.tree.heading(col, text=col, anchor='center')
                 self.tree.column(col, width=150, minwidth=100, stretch=True)
@@ -968,6 +1015,11 @@ class FileWindow(tk.Toplevel):
         query = self.search_var.get().lower().strip()
         col = self.column_var.get()
         
+        if col not in self.tree["columns"]:
+            return
+    
+        col_index = self.tree["columns"].index(col)
+
         # Определяем числовые колонки для текущего типа файла
         numeric_columns = {
             1: ['Цена ЗУ по договору, руб.', 'Оплачено', 
@@ -983,9 +1035,12 @@ class FileWindow(tk.Toplevel):
 
         for item in self.tree.get_children(''):
             values = self.tree.item(item, 'values')
+
+            if col not in self.tree["columns"]:
+                return 
             col_index = self.tree["columns"].index(col)
             raw_value = str(values[col_index])
-            
+
             match = False
             
             try:
@@ -1508,11 +1563,18 @@ class FileWindow(tk.Toplevel):
         if region != "cell":
             return
         
+        item = self.tree.identify_row(event.y)
+        if not item:  # Добавленная проверка
+            return
+
         if not self.has_permission():
             messagebox.showwarning("Доступ запрещен")
             return
 
         item = self.tree.identify_row(event.y)
+        if not item:  # Проверка на существование элемента
+            return  
+        
         column = self.tree.identify_column(event.x)
         col_index = int(column[1:]) - 2  # Изменено с -1 на -2
         if col_index < 0 or col_index >= len(self.expected_columns[self.file_type]):
