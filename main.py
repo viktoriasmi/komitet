@@ -624,16 +624,8 @@ class AdminWindow(tk.Toplevel):
         container.grid_columnconfigure(0, weight=1)
 
     def apply_filter(self, event=None):
-        query = self.search_var.get().strip().lower()
+        query = self.search_var.get().strip()
         col = self.column_var.get()
-        
-        # Сбрасываем фильтр при пустом запросе
-        if not query:
-            for item in self.tree.get_children():
-                tags = list(self.tree.item(item, 'tags'))
-                tags = [t for t in tags if t not in ('match', 'nomatch')]
-                self.tree.item(item, tags=tags)
-            return
         
         column_mapping = {
             'ФИО': 0,
@@ -642,27 +634,24 @@ class AdminWindow(tk.Toplevel):
             'Реестр 1': 3,
             'Реестр 2': 4
         }
-        
         col_index = column_mapping.get(col, 1)
         bool_columns = {'Админ', 'Реестр 1', 'Реестр 2'}
-
+        
         for item in self.tree.get_children():
             values = self.tree.item(item, 'values')
-            raw_value = str(values[col_index]).lower().strip()  # Поиск без учета регистра
+            display_value = str(values[col_index]).strip().lower()
+            query_lower = query.strip().lower()
             
             if col in bool_columns:
-                # Обработка булевых значений
                 search_map = {
-                    '1': '✓', '✓': '✓',
-                    '0': '✗', '✗': '✗',
-                    'да': '✓', 'нет': '✗',
-                    'true': '✓', 'false': '✗'
+                    '1': '✓', '✓': '✓', 'да': '✓', 'yes': '✓', 'true': '✓',
+                    '0': '✗', '✗': '✗', 'нет': '✗', 'no': '✗', 'false': '✗'
                 }
-                search_value = search_map.get(query, query)
+                search_value = search_map.get(query_lower, query_lower)
                 match = str(values[col_index]) == search_value
             else:
-                # Поиск подстроки в любом месте значения
-                match = query in raw_value
+                # Точное совпадение без учёта регистра
+                match = query_lower == display_value
             
             tags = list(self.tree.item(item, 'tags'))
             tags = [t for t in tags if t not in ('match', 'nomatch')]
@@ -686,17 +675,14 @@ class AdminWindow(tk.Toplevel):
         self.tree.delete(*self.tree.get_children())
         cursor = self.db.conn.cursor()
         
-        # Базовый запрос
-        query = "SELECT * FROM users"
+        query = "SELECT id, fio, login, is_admin, can_edit_1, can_edit_2, login_attempts, is_locked FROM users"
         conditions = []
         
-        # Добавляем условия фильтрации
         if status == 'Активные':
             conditions.append("is_locked = 0")
         elif status == 'Заблокированные':
             conditions.append("is_locked = 1")
         
-        # Формируем окончательный запрос
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         
@@ -712,10 +698,8 @@ class AdminWindow(tk.Toplevel):
                     row[6],  # attempts
                     '✓' if row[7] else '✗'  # locked
                 ),
-                tags=(row[0],)  # Сохраняем ID пользователя в тегах
+                tags=(row[0],)
             )
-        
-        # Обновляем цвета строк
         self.update_row_colors()
 
     def unlock_user(self):
