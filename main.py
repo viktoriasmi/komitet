@@ -483,6 +483,15 @@ class MainApp(tk.Tk):
         self.style.configure('TButton', font=('Arial', 12), padding=10)
         self.create_widgets()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.bg_color = self.cget('background')
+        self.is_dark = self.is_dark_theme()
+
+    def is_dark_theme(self):
+        bg_color = self.cget('background')
+        rgb = self.winfo_rgb(bg_color)
+        r, g, b = [x//256 for x in rgb]
+        luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+        return luminance < 0.5
 
     def open_admin_panel(self):
         AdminWindow(self)
@@ -658,8 +667,8 @@ class AdminWindow(tk.Toplevel):
             tags.append('match' if match else 'nomatch')
             self.tree.item(item, tags=tags)
         
-        self.tree.tag_configure('match', background='#90EE90')
-        self.tree.tag_configure('nomatch', background='gray90')
+        self.tree.tag_configure('match', background='SystemHighlight')
+        self.tree.tag_configure('nomatch', background='SystemWindowBackground')
 
     def update_row_colors(self):
         for i, item in enumerate(self.tree.get_children()):
@@ -858,11 +867,12 @@ class FileWindow(tk.Toplevel):
             self.tooltip.wm_geometry(f"+{x_root}+{y_root}")
             
             label = ttk.Label(self.tooltip, 
-                            text=value, 
-                            background="#ffffe0",
-                            relief='solid',
-                            borderwidth=1,
-                            wraplength=300)
+                        text=value, 
+                        background='SystemWindowBackground',
+                        foreground='SystemWindowText',
+                        relief='solid',
+                        borderwidth=1,
+                        wraplength=300)
             label.pack()
 
     def hide_tooltip(self, event=None):
@@ -950,11 +960,34 @@ class FileWindow(tk.Toplevel):
         self.style.configure("Red.Treeview", background="#ffcccc")
         self.style.configure("Yellow.Treeview", background="#ffffcc")
 
+        self.style.configure("Treeview", 
+                            font=('Arial', 10), 
+                            rowheight=30,
+                            background='SystemWindowBackground',
+                            fieldbackground='SystemWindowBackground',
+                            foreground='SystemWindowText')
+        self.style.configure("Treeview.Heading", 
+                            font=('Arial', 10, 'bold'),
+                            background='SystemButtonFace',
+                            foreground='SystemWindowText',
+                            relief="flat")
+
     def setup_tags(self):
-        self.tree.tag_configure('overdue', background='#ffcccc')
-        self.tree.tag_configure('warning', background='#ffffcc')
-        self.tree.tag_configure('evenrow', background='#f8f8f8')
-        self.tree.tag_configure('oddrow', background='#ffffff')
+        if self.parent.is_dark:
+            overdue_bg = '#660000'
+            warning_bg = '#666600'
+            evenrow_bg = '#333333'
+            oddrow_bg = '#444444'
+        else:
+            overdue_bg = '#ffcccc'
+            warning_bg = '#ffffcc'
+            evenrow_bg = '#f8f8f8'
+            oddrow_bg = '#ffffff'
+
+        self.tree.tag_configure('overdue', background=overdue_bg)
+        self.tree.tag_configure('warning', background=warning_bg)
+        self.tree.tag_configure('evenrow', background=evenrow_bg)
+        self.tree.tag_configure('oddrow', background=oddrow_bg)
 
     def sort_treeview(self, col, reverse):
         data = [(self.tree.set(child, col), child) 
