@@ -627,6 +627,14 @@ class AdminWindow(tk.Toplevel):
         query = self.search_var.get().strip().lower()
         col = self.column_var.get()
         
+        # Сбрасываем фильтр при пустом запросе
+        if not query:
+            for item in self.tree.get_children():
+                tags = list(self.tree.item(item, 'tags'))
+                tags = [t for t in tags if t not in ('match', 'nomatch')]
+                self.tree.item(item, tags=tags)
+            return
+        
         column_mapping = {
             'ФИО': 0,
             'Логин': 1,
@@ -635,27 +643,27 @@ class AdminWindow(tk.Toplevel):
             'Реестр 2': 4
         }
         
-        col_index = column_mapping.get(col, 1)  # По умолчанию ищем по Логину
+        col_index = column_mapping.get(col, 1)
         bool_columns = {'Админ', 'Реестр 1', 'Реестр 2'}
 
         for item in self.tree.get_children():
             values = self.tree.item(item, 'values')
-            raw_value = str(values[col_index]).strip().lower()
+            raw_value = str(values[col_index]).lower().strip()  # Поиск без учета регистра
             
-            # Обработка булевых полей
             if col in bool_columns:
+                # Обработка булевых значений
                 search_map = {
                     '1': '✓', '✓': '✓',
                     '0': '✗', '✗': '✗',
-                    'да': '✓', 'нет': '✗'
+                    'да': '✓', 'нет': '✗',
+                    'true': '✓', 'false': '✗'
                 }
                 search_value = search_map.get(query, query)
                 match = str(values[col_index]) == search_value
             else:
-                # Для текстовых полей
+                # Поиск подстроки в любом месте значения
                 match = query in raw_value
             
-            # Обновление тегов
             tags = list(self.tree.item(item, 'tags'))
             tags = [t for t in tags if t not in ('match', 'nomatch')]
             tags.append('match' if match else 'nomatch')
@@ -664,16 +672,33 @@ class AdminWindow(tk.Toplevel):
         self.tree.tag_configure('match', background='#90EE90')
         self.tree.tag_configure('nomatch', background='gray90')
 
+    def update_row_colors(self):
+        for i, item in enumerate(self.tree.get_children()):
+            tags = list(self.tree.item(item, 'tags'))
+            # Удаляем старые теги четности
+            tags = [t for t in tags if t not in ('evenrow', 'oddrow')]
+            # Добавляем новые теги
+            tags.append('evenrow' if i % 2 == 0 else 'oddrow')
+            self.tree.item(item, tags=tags)
+
     def load_users(self):
         status = self.filter_status.get()
         self.tree.delete(*self.tree.get_children())
         cursor = self.db.conn.cursor()
+        
+        # Базовый запрос
         query = "SELECT * FROM users"
-        params = []
+        conditions = []
+        
+        # Добавляем условия фильтрации
         if status == 'Активные':
-            query += " AND is_locked = 0"
+            conditions.append("is_locked = 0")
         elif status == 'Заблокированные':
-            query += " AND is_locked = 1"
+            conditions.append("is_locked = 1")
+        
+        # Формируем окончательный запрос
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         
         cursor.execute(query)
         for row in cursor.fetchall():
@@ -687,8 +712,11 @@ class AdminWindow(tk.Toplevel):
                     row[6],  # attempts
                     '✓' if row[7] else '✗'  # locked
                 ),
-                tags=(row[0],)
+                tags=(row[0],)  # Сохраняем ID пользователя в тегах
             )
+        
+        # Обновляем цвета строк
+        self.update_row_colors()
 
     def unlock_user(self):
         selected = self.tree.selection()
