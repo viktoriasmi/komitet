@@ -1043,34 +1043,34 @@ class FileWindow(tk.Toplevel):
         self.tree.tag_configure('oddrow', background=oddrow_bg)
 
     def sort_treeview(self, col, reverse):
-        data = [(self.tree.set(child, col), child) 
-              for child in self.tree.get_children('')]
-        
-        # Пытаемся преобразовать к числам для правильной сортировки
+        data = [
+            (self.tree.set(child, col), child, self.tree.item(child, 'tags'))  
+            for child in self.tree.get_children('')
+        ]
+
         try:
             data.sort(key=lambda t: float(t[0].replace(',', '.')), reverse=reverse)
         except:
             data.sort(reverse=reverse)
         
-        for index, (val, child) in enumerate(data):
+        for index, (val, child, tags) in enumerate(data):  
             self.tree.move(child, '', index)
+            self.tree.item(child, tags=tags) 
         
         self.tree.heading(col, 
                         command=lambda: self.sort_treeview(col, not reverse))
-        
-        # Обновляем цвета строк после сортировки
+
         self.update_row_colors()
-       
-        #self.filter_data()
 
     def update_row_colors(self):
         for i, child in enumerate(self.tree.get_children('')):
-            tags = list(self.tree.item(child, 'tags'))
-            # Удаляем старые теги строк
-            tags = [t for t in tags if t not in ('evenrow', 'oddrow')]
-            # Добавляем новые теги
-            tags.append('evenrow' if i % 2 == 0 else 'oddrow')
-            self.tree.item(child, tags=tags)
+            current_tags = list(self.tree.item(child, 'tags'))
+
+            current_tags = [t for t in current_tags if t not in ('evenrow', 'oddrow')]
+            
+            current_tags.append('evenrow' if i % 2 == 0 else 'oddrow')
+            
+            self.tree.item(child, tags=current_tags)
 
     def show_tooltip(self, event):
         region = self.tree.identify_region(event.x, event.y)
