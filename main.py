@@ -631,8 +631,8 @@ class AdminWindow(tk.Toplevel):
         
         ttk.Label(search_panel, text="в колонке:").pack(side='left', padx=5)
         search_combo = ttk.Combobox(search_panel, textvariable=self.column_var,
-                                  values=['ФИО', 'Логин', 'Админ', 'Реестр 1', 'Реестр 2'],
-                                  state='readonly', width=15)
+                              values=['ФИО', 'Логин', 'Админ', 'Реестр 1', 'Реестр 2'],
+                              state='readonly', width=15)
         search_combo.pack(side='left', padx=5)
         search_combo.current(0)
         search_entry.bind('<KeyRelease>', self.apply_filter)
@@ -686,42 +686,62 @@ class AdminWindow(tk.Toplevel):
                 messagebox.showerror("Ошибка БД", f"Ошибка при удалении: {str(e)}")
 
     def apply_filter(self, event=None):
-        query = self.search_var.get().strip()
+        query = self.search_var.get().strip().lower()
         col = self.column_var.get()
         
         column_mapping = {
-            'ФИО': 0,
-            'Логин': 1,
-            'Админ': 2,
-            'Реестр 1': 3,
-            'Реестр 2': 4
+            'ФИО': 'fio',
+            'Логин': 'login',
+            'Админ': 'admin',
+            'Реестр 1': 'edit1',
+            'Реестр 2': 'edit2'
         }
-        col_index = column_mapping.get(col, 1)
-        bool_columns = {'Админ', 'Реестр 1', 'Реестр 2'}
+        col_name = column_mapping.get(col, 'login')
+        
+        # Определяем, является ли колонка булевой
+        bool_columns = {'admin', 'edit1', 'edit2'}
+        is_bool_col = col_name in bool_columns
+        
+        # Расширенный маппинг для булевых колонок
+        search_map = {
+            '1': '✓', 'да': '✓', 'yes': '✓', 'true': '✓', '+': '✓', 'админ': '✓',
+            '0': '✗', 'нет': '✗', 'no': '✗', 'false': '✗', '-': '✗',
+            'реестр 1': '✓', 'реестр1': '✓', 'edit1': '✓',
+            'реестр 2': '✓', 'реестр2': '✓', 'edit2': '✓'
+        }
+        
+        if is_bool_col:
+            # Преобразуем запрос в символ
+            search_value = search_map.get(query, '')
+        else:
+            search_value = query.lower()
         
         for item in self.tree.get_children():
             values = self.tree.item(item, 'values')
-            display_value = str(values[col_index]).strip().lower()
-            query_lower = query.strip().lower()
+            col_index = {
+                'fio': 0,
+                'login': 1,
+                'admin': 2,
+                'edit1': 3,
+                'edit2': 4
+            }.get(col_name, 1)  # По умолчанию 'login'
             
-            if col in bool_columns:
-                search_map = {
-                    '1': '✓', '✓': '✓', 'да': '✓', 'yes': '✓', 'true': '✓',
-                    '0': '✗', '✗': '✗', 'нет': '✗', 'no': '✗', 'false': '✗'
-                }
-                search_value = search_map.get(query_lower, query_lower)
-                match = str(values[col_index]) == search_value
+            cell_value = str(values[col_index]).strip().lower() if not is_bool_col else str(values[col_index]).strip()
+            
+            if is_bool_col:
+                # Сравниваем с преобразованным значением
+                match = cell_value == search_value
             else:
-                # Точное совпадение без учёта регистра
-                match = query_lower == display_value
+                # Поиск подстроки для текстовых колонок
+                match = search_value in cell_value
             
             tags = list(self.tree.item(item, 'tags'))
             tags = [t for t in tags if t not in ('match', 'nomatch')]
             tags.append('match' if match else 'nomatch')
             self.tree.item(item, tags=tags)
         
-        self.tree.tag_configure('match', background='SystemHighlight')
-        self.tree.tag_configure('nomatch', background='SystemWindowBackground')
+        self.tree.tag_configure('match', background='lightblue')
+        self.tree.tag_configure('nomatch', background='white')
 
     def update_row_colors(self):
         for i, item in enumerate(self.tree.get_children()):
@@ -1163,48 +1183,38 @@ class FileWindow(tk.Toplevel):
         
         if col not in self.tree["columns"]:
             return
-    
+        
         col_index = self.tree["columns"].index(col)
 
-        # Определяем числовые колонки для текущего типа файла
         numeric_columns = {
             1: ['Цена ЗУ по договору, руб.', 'Оплачено', 
                 'начисленные ПЕНИ', 'оплачено пеней',
                 'Площадь ЗУ, кв. м', 'Контроль по дате ("-" - просрочка)',
                 'Контроль по оплате цены ("-" - переплата; "+" - недоплата)',
                 'неоплаченные ПЕНИ ("+" - недоплата; "-" - переплата)'],
-            2: [],
-            3: []
+            2: []
         }.get(self.file_type, [])
         
         is_numeric_col = col in numeric_columns
 
         for item in self.tree.get_children(''):
             values = self.tree.item(item, 'values')
-
-            if col not in self.tree["columns"]:
-                return 
-            col_index = self.tree["columns"].index(col)
             raw_value = str(values[col_index])
+            cell_value = raw_value.lower().strip()
 
             match = False
             
             try:
                 if is_numeric_col and query:
-                    # Нормализуем числовые значения
                     cell_num = float(raw_value.replace(',', '.').replace(' ', ''))
                     query_num = float(query.replace(',', '.'))
                     match = math.isclose(cell_num, query_num, rel_tol=1e-9)
                 else:
-                    # Текстовый поиск
-                    cell_value = raw_value.lower()
-                    match = query in cell_value
+                    # Изменено на поиск с начала строки
+                    match = cell_value.startswith(query)
             except:
-                # В случае ошибки преобразования - используем текстовый поиск
-                cell_value = raw_value.lower()
-                match = query in cell_value
+                match = False
             
-            # Обновляем теги
             current_tags = list(self.tree.item(item, 'tags'))
             current_tags = [t for t in current_tags if t not in ('match', 'nomatch')]
             
@@ -1215,10 +1225,9 @@ class FileWindow(tk.Toplevel):
             
             self.tree.item(item, tags=current_tags)
         
-        # Настройка внешнего вида тегов
         self.tree.tag_configure('match', background='#90EE90')
         self.tree.tag_configure('nomatch', background='gray90')
-    
+        
     def create_toolbar(self):
         toolbar = ttk.Frame(self)
         toolbar.pack(fill='x', padx=5, pady=5)
