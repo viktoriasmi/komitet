@@ -336,13 +336,23 @@ class RegisterDialog(tk.Toplevel):
         ttk.Button(btn_frame, text="Отмена", command=self.destroy).pack(side='left', padx=5)
 
     def register(self):
-        fio = self.fio_entry.get()
+        fio = self.fio_entry.get().strip()
         login = self.login_entry.get().strip()
         password = self.password_entry.get().strip()
         confirm = self.confirm_entry.get().strip()
 
-        if not all([fio, login, password, confirm]):
-            messagebox.showerror("Ошибка", "Все поля обязательны для заполнения")
+        # Проверка ФИО отдельно
+        if not fio:
+            CustomMessageBox(self, "Ошибка", "Поле ФИО обязательно").wait_window()
+            return
+
+        # Проверка остальных обязательных полей
+        if not all([login, password, confirm]):
+            CustomMessageBox(self, "Ошибка", "Все поля обязательны для заполнения").wait_window()
+            return
+
+        if password != confirm:
+            CustomMessageBox(self, "Ошибка", "Пароли не совпадают").wait_window()
             return
 
         if password != confirm:
