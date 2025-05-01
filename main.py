@@ -186,6 +186,13 @@ class DatabaseHandler:
             '''CREATE TRIGGER IF NOT EXISTS update_editor AFTER UPDATE ON contracts
             BEGIN
                 UPDATE contracts SET "Редактор" = NEW."Редактор" WHERE id = NEW.id;
+            END;''',
+
+            '''CREATE TRIGGER IF NOT EXISTS prevent_admin_deletion BEFORE DELETE ON users
+            BEGIN
+                SELECT RAISE(ABORT, 'Cannot delete last admin') 
+                WHERE OLD.is_admin = 1 
+                AND (SELECT COUNT(*) FROM users WHERE is_admin = 1) = 1;
             END;'''
         ]
         
@@ -623,14 +630,50 @@ class AdminWindow(tk.Toplevel):
         # Кнопки управления
         btn_panel = ttk.Frame(container)
         btn_panel.grid(row=4, column=0, sticky='ew', pady=10)
+        btn_panel = ttk.Frame(container)
+        btn_panel.grid(row=4, column=0, sticky='ew', pady=10)
         
         ttk.Button(btn_panel, text="Разблокировать", command=self.unlock_user).pack(side='left', padx=5)
         ttk.Button(btn_panel, text="Сбросить попытки", command=self.reset_attempts).pack(side='left', padx=5)
+        ttk.Button(btn_panel, text="Удалить", command=self.delete_user).pack(side='left', padx=5)  
         ttk.Button(btn_panel, text="Сохранить изменения", command=self.save_changes).pack(side='right')
 
         # Настройка весов для растягивания
         container.grid_rowconfigure(1, weight=1)
         container.grid_columnconfigure(0, weight=1)
+
+    def delete_user(self):
+        selected = self.tree.selection()
+        if not selected:
+            CustomMessageBox(self, "Ошибка", "Выберите пользователя!").wait_window()
+            return
+            
+        user_id = self.tree.item(selected[0], 'tags')[0]
+        
+        # Получаем информацию о пользователе для подтверждения
+        cursor = self.db.conn.cursor()
+        cursor.execute("SELECT fio, login FROM users WHERE id = ?", (user_id,))
+        fio, login = cursor.fetchone()
+        
+        # Диалог подтверждения
+        confirm = messagebox.askyesno(
+            "Подтверждение удаления",
+            f"Вы точно хотите удалить пользователя:\n{fio} ({login})?",
+            parent=self
+        )
+        if not confirm:
+            return
+
+        try:
+            with self.db.conn:
+                self.db.conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            self.load_users()
+            messagebox.showinfo("Успех", "Пользователь успешно удален")
+        except sqlite3.Error as e:
+            if "Cannot delete last admin" in str(e):
+                messagebox.showerror("Ошибка", "Невозможно удалить последнего администратора!")
+            else:
+                messagebox.showerror("Ошибка БД", f"Ошибка при удалении: {str(e)}")
 
     def apply_filter(self, event=None):
         query = self.search_var.get().strip()
